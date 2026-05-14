@@ -1,0 +1,248 @@
+# =============================================================
+#  auto-trader 설정 파일
+#  API 키는 .env 파일에서 관리 (이 파일에는 넣지 마세요)
+# =============================================================
+
+
+# ─────────────────────────────────────────
+# 매매 기본 설정
+# ─────────────────────────────────────────
+trading:
+  # 실행 모드
+  #   strategy → 아래 strategy.name 전략 사용
+  #   brain    → Claude AI가 유니버스에서 종목 발굴 + 자동 매수/매도
+  mode: brain
+
+  # 한국장 시간 (KST)
+  market_open:  "09:05"   # 장 시작 (풀 선정 + 첫 매매)
+  market_close: "15:20"   # 장 마감 전 마지막 체크
+
+  # 미국장 시간 (KST)
+  market_open_us:  "23:00"  # 나스닥 개장 30분 후
+  market_close_us: "04:30"  # 미국장 마감 전
+
+  # 매매 체크 주기 (분) — 장중 반복 실행 간격
+  interval_minutes: 30      # 한국장 30분마다
+  interval_minutes_us: 30   # 미국장 30분마다
+
+  # 1회 최대 매수 금액
+  max_buy_amount: 100000      # 원화 (한국주식)
+  max_buy_amount_usd: 100     # 달러 (미국주식)
+
+  # 손절 기준 (stop_loss 잡에서 사용, Claude 없이 즉시 매도)
+  stop_loss_pct: -5.0         # 한국주식 손절 기준 (%)
+  stop_loss_pct_us: -7.0      # 미국주식 손절 기준 (%) — 변동성 크므로 넉넉하게
+
+
+# ─────────────────────────────────────────
+# Brain 모드 설정 (mode: brain 일 때)
+# ─────────────────────────────────────────
+brain:
+  # 유니버스 → 후보 풀 압축 크기
+  pool_size: 15       # 한국주식 후보 풀
+  pool_size_us: 8     # 미국주식 후보 풀
+
+  # 후보 풀 → 실제 매수 최대 종목 수
+  buy_limit: 3        # 한국주식
+  buy_limit_us: 3     # 미국주식
+
+  # 후보 풀 갱신 주기
+  #   daily  → 매일 장 시작 시 새로 선정
+  #   weekly → 월요일에만 선정, 이후 재사용
+  pool_refresh: daily
+
+
+# ─────────────────────────────────────────
+# 전략 설정 (mode: strategy 일 때)
+# ─────────────────────────────────────────
+strategy:
+  # regime_adaptive / golden_cross / macd / bollinger
+  # momentum / dual_momentum / rsi / turtle / volatility_breakout
+  name: regime_adaptive
+
+
+# ─────────────────────────────────────────
+# Strategy 모드 종목 (mode: strategy 일 때)
+# ─────────────────────────────────────────
+stocks:
+  - { code: "005930", name: "삼성전자" }
+  - { code: "000660", name: "SK하이닉스" }
+  - { code: "035420", name: "NAVER" }
+  - { code: "005380", name: "현대차" }
+  - { code: "068270", name: "셀트리온" }
+  - { code: "105560", name: "KB금융" }
+  - { code: "005490", name: "POSCO홀딩스" }
+  - { code: "035720", name: "카카오" }
+
+
+# ─────────────────────────────────────────
+# Brain 모드 유니버스 (AI가 후보 풀을 고를 전체 후보군)
+# 종목 추가/삭제 자유롭게 — 코드는 KIS 6자리
+# ─────────────────────────────────────────
+universe:
+  # 반도체 / 전자
+  - { code: "005930", name: "삼성전자",       sector: "반도체" }
+  - { code: "000660", name: "SK하이닉스",     sector: "반도체" }
+  - { code: "009150", name: "삼성전기",       sector: "반도체" }
+  - { code: "011070", name: "LG이노텍",       sector: "반도체" }
+  - { code: "042700", name: "한미반도체",     sector: "반도체" }
+  - { code: "058470", name: "리노공업",       sector: "반도체" }
+  - { code: "240810", name: "원익IPS",        sector: "반도체" }
+
+  # 자동차
+  - { code: "005380", name: "현대차",         sector: "자동차" }
+  - { code: "000270", name: "기아",           sector: "자동차" }
+  - { code: "012330", name: "현대모비스",     sector: "자동차" }
+  - { code: "060980", name: "한라홀딩스",     sector: "자동차" }
+
+  # 배터리 / 신에너지
+  - { code: "373220", name: "LG에너지솔루션", sector: "배터리" }
+  - { code: "006400", name: "삼성SDI",        sector: "배터리" }
+  - { code: "051910", name: "LG화학",         sector: "배터리" }
+  - { code: "247540", name: "에코프로비엠",   sector: "배터리" }
+  - { code: "003670", name: "포스코퓨처엠",   sector: "배터리" }
+
+  # 플랫폼 / IT서비스
+  - { code: "035420", name: "NAVER",          sector: "플랫폼" }
+  - { code: "035720", name: "카카오",         sector: "플랫폼" }
+  - { code: "259960", name: "크래프톤",       sector: "플랫폼" }
+  - { code: "293490", name: "카카오게임즈",   sector: "플랫폼" }
+  - { code: "066570", name: "LG전자",         sector: "전자" }
+
+  # 바이오 / 제약
+  - { code: "207940", name: "삼성바이오로직스", sector: "바이오" }
+  - { code: "068270", name: "셀트리온",       sector: "바이오" }
+  - { code: "000100", name: "유한양행",       sector: "바이오" }
+  - { code: "128940", name: "한미약품",       sector: "바이오" }
+  - { code: "185750", name: "종근당",         sector: "바이오" }
+
+  # 금융
+  - { code: "105560", name: "KB금융",         sector: "금융" }
+  - { code: "055550", name: "신한지주",       sector: "금융" }
+  - { code: "086790", name: "하나금융지주",   sector: "금융" }
+  - { code: "316140", name: "우리금융지주",   sector: "금융" }
+  - { code: "323410", name: "카카오뱅크",     sector: "금융" }
+  - { code: "032830", name: "삼성생명",       sector: "금융" }
+
+  # 소재 / 철강 / 화학
+  - { code: "005490", name: "POSCO홀딩스",    sector: "소재" }
+  - { code: "011170", name: "롯데케미칼",     sector: "소재" }
+  - { code: "011780", name: "금호석유",       sector: "소재" }
+
+  # 소비 / 유통
+  - { code: "090430", name: "아모레퍼시픽",  sector: "소비" }
+  - { code: "051900", name: "LG생활건강",     sector: "소비" }
+  - { code: "097950", name: "CJ제일제당",     sector: "소비" }
+  - { code: "139480", name: "이마트",         sector: "소비" }
+
+  # 통신
+  - { code: "017670", name: "SK텔레콤",       sector: "통신" }
+  - { code: "030200", name: "KT",             sector: "통신" }
+  - { code: "032640", name: "LG유플러스",     sector: "통신" }
+
+  # 중공업 / 건설 / 조선
+  - { code: "000720", name: "현대건설",       sector: "건설" }
+  - { code: "034020", name: "두산에너빌리티", sector: "중공업" }
+  - { code: "009540", name: "HD한국조선해양", sector: "조선" }
+  - { code: "042660", name: "한화오션",       sector: "조선" }
+
+  # 방산 / 항공
+  - { code: "012450", name: "한화에어로스페이스", sector: "방산" }
+  - { code: "003490", name: "대한항공",       sector: "항공" }
+
+  # ETF
+  - { code: "069500", name: "KODEX 200",      sector: "ETF" }
+  - { code: "229200", name: "KODEX 코스닥150", sector: "ETF" }
+
+
+# ─────────────────────────────────────────
+# 미국주식 유니버스 (Brain 모드, 미장 세션)
+# exchange: NAS(나스닥) / NYS(뉴욕) / AMS(아멕스)
+# ─────────────────────────────────────────
+universe_us:
+  # AI / 반도체
+  - { ticker: "NVDA",  name: "엔비디아",       exchange: "NAS", sector: "AI반도체" }
+  - { ticker: "AMD",   name: "AMD",             exchange: "NAS", sector: "AI반도체" }
+  - { ticker: "AVGO",  name: "브로드컴",        exchange: "NAS", sector: "AI반도체" }
+  - { ticker: "AMAT",  name: "어플라이드머티리얼즈", exchange: "NAS", sector: "AI반도체" }
+  - { ticker: "MRVL",  name: "마벨테크놀로지",  exchange: "NAS", sector: "AI반도체" }
+
+  # 빅테크
+  - { ticker: "AAPL",  name: "애플",            exchange: "NAS", sector: "빅테크" }
+  - { ticker: "MSFT",  name: "마이크로소프트",   exchange: "NAS", sector: "빅테크" }
+  - { ticker: "GOOGL", name: "알파벳",           exchange: "NAS", sector: "빅테크" }
+  - { ticker: "META",  name: "메타",             exchange: "NAS", sector: "빅테크" }
+  - { ticker: "AMZN",  name: "아마존",           exchange: "NAS", sector: "빅테크" }
+
+  # AI 소프트웨어 / 클라우드
+  - { ticker: "PLTR",  name: "팔란티어",         exchange: "NYS", sector: "AI소프트웨어" }
+  - { ticker: "NOW",   name: "서비스나우",        exchange: "NYS", sector: "AI소프트웨어" }
+  - { ticker: "CRM",   name: "세일즈포스",        exchange: "NYS", sector: "AI소프트웨어" }
+  - { ticker: "SNOW",  name: "스노우플레이크",    exchange: "NYS", sector: "AI소프트웨어" }
+
+  # 전기차 / 에너지
+  - { ticker: "TSLA",  name: "테슬라",           exchange: "NAS", sector: "전기차" }
+
+  # 금융
+  - { ticker: "JPM",   name: "JP모건",           exchange: "NYS", sector: "금융" }
+  - { ticker: "GS",    name: "골드만삭스",        exchange: "NYS", sector: "금융" }
+  - { ticker: "V",     name: "비자",             exchange: "NYS", sector: "금융" }
+
+  # 헬스케어 / 바이오
+  - { ticker: "LLY",   name: "일라이릴리",        exchange: "NYS", sector: "헬스케어" }
+  - { ticker: "UNH",   name: "유나이티드헬스",    exchange: "NYS", sector: "헬스케어" }
+
+  # ETF (시장 전체 헤지 / 분산)
+  - { ticker: "QQQ",   name: "나스닥100 ETF",    exchange: "NAS", sector: "ETF" }
+  - { ticker: "SOXX",  name: "반도체 ETF",       exchange: "NAS", sector: "ETF" }
+
+
+# ─────────────────────────────────────────
+# 전략별 파라미터 (mode: strategy 일 때)
+# ─────────────────────────────────────────
+params:
+
+  regime_adaptive:
+    atr_window: 14
+    regime_window: 60
+    bb_window: 20
+    bb_std: 2.0
+    ma_short: 20
+    ma_long: 60
+    stop_loss: -5.0
+
+  golden_cross:
+    ma_short: 20
+    ma_long: 60
+    stop_loss: -5.0
+
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+    stop_loss: -5.0
+
+  bollinger:
+    window: 20
+    num_std: 2.0
+    stop_loss: -5.0
+
+  momentum:
+    take_profit: 5.0
+    stop_loss: -3.0
+
+  dual_momentum:
+    stop_loss: -5.0
+
+  rsi:
+    rsi_buy: 30
+    rsi_sell: 70
+    stop_loss: -5.0
+
+  turtle:
+    entry_days: 20
+    exit_days: 10
+    atr_stop_multiplier: 2.0
+
+  volatility_breakout:
+    k: 0.5

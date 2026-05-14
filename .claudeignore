@@ -1,0 +1,3 @@
+# auto-trader/.claudeignore
+.env
+config.py
