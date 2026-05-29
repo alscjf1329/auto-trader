@@ -20,6 +20,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import anthropic
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -28,8 +29,189 @@ import kis_api
 
 client = anthropic.Anthropic()
 
-_POOL_CACHE    = Path(__file__).parent / "logs" / "pool_cache.json"
-_POOL_CACHE_US = Path(__file__).parent / "logs" / "pool_cache_us.json"
+_POOL_CACHE      = Path(__file__).parent / "logs" / "pool_cache.json"
+
+# ══════════════════════════════════════════════════════════════
+# tool_use 스키마 — JSON 파싱 에러 완전 차단
+# 프롬프트에 "JSON으로 답하세요" 대신 tool_choice="any" 로 강제 구조화 출력
+# ══════════════════════════════════════════════════════════════
+
+_TOOL_SELECT_POOL = {
+    "name": "select_pool",
+    "description": "퀀트 팩터 모델 1차 선별 결과를 검토해 최종 후보 풀 종목 코드와 선정 근거를 반환합니다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "pool": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "선정된 종목 코드 목록 (한국: 6자리 숫자, 미국: 티커)",
+            },
+            "analysis": {
+                "type": "string",
+                "description": "선정 근거 및 팩터 모델 보정 사항 2~3줄",
+            },
+        },
+        "required": ["pool", "analysis"],
+    },
+}
+
+_TOOL_SELECT_TARGETS = {
+    "name": "select_targets",
+    "description": "당일 모멘텀 점수 기준 후보 풀에서 실제 매수 종목을 확정합니다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "selected": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "선정된 종목 코드 목록 (이상 징후 없는 종목만)",
+            },
+            "reason": {
+                "type": "string",
+                "description": "이상 징후 필터 결과 한 문장 (없으면 '상위 종목 선택')",
+            },
+        },
+        "required": ["selected", "reason"],
+    },
+}
+
+_TOOL_SELL_DECISION = {
+    "name": "sell_decision",
+    "description": "보유 종목의 매도 여부와 판단 이유를 반환합니다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "sell": {
+                "type": "boolean",
+                "description": "true = 매도, false = 유지",
+            },
+            "reason": {
+                "type": "string",
+                "description": "판단 이유 한 문장",
+            },
+        },
+        "required": ["sell", "reason"],
+    },
+}
+
+
+def _extract_tool_result(msg) -> dict:
+    """
+    tool_use 블록에서 결과 추출.
+    tool_use 블록이 없으면 텍스트에서 JSON 추출 시도 (fallback).
+    어떤 경우에도 예외를 raise 하지 않음.
+    """
+    import re
+
+    # 1순위: tool_use 블록 (항상 여기서 끝나야 정상)
+    for block in msg.content:
+        if hasattr(block, "type") and block.type == "tool_use":
+            return dict(block.input)
+
+    # 2순위: 텍스트 블록에서 JSON 추출 (fallback)
+    for block in msg.content:
+        if hasattr(block, "text") and block.text:
+            text = block.text.strip()
+            # ```json ... ``` 또는 ``` ... ``` 제거
+            text = re.sub(r"```(?:json)?\s*", "", text)
+            text = re.sub(r"```", "", text)
+            # 첫 번째 { ... } 추출
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if m:
+                try:
+                    return json.loads(m.group())
+                except Exception:
+                    pass
+
+    print("[Brain] WARNING: tool_use 블록을 찾을 수 없어 빈 dict 반환")
+    return {}
+_POOL_CACHE_US   = Path(__file__).parent / "logs" / "pool_cache_us.json"
+_RESEARCH_CACHE  = Path(__file__).parent / "logs" / "research_cache.json"
+_REGIME_CACHE    = Path(__file__).parent / "logs" / "regime_cache.json"
+
+
+# ══════════════════════════════════════════════════════════════
+# 글로벌 리서치 자동 수집 (Citi · GS · MS 등, 하루 1회 캐싱)
+# ══════════════════════════════════════════════════════════════
+
+def _fetch_research() -> str:
+    """
+    Claude가 웹검색으로 최신 글로벌 IB 리서치를 수집해 한국어로 요약.
+    하루 1회만 실행하고 logs/research_cache.json에 캐싱.
+    실패 시 빈 문자열 반환 (매매 로직에는 영향 없음).
+    """
+    # ── 캐시 확인 ────────────────────────────────────────────
+    if _RESEARCH_CACHE.exists():
+        try:
+            data = json.loads(_RESEARCH_CACHE.read_text(encoding="utf-8"))
+            if data.get("date") == date.today().isoformat():
+                content = data.get("content", "")
+                if content:
+                    print("[Brain] 리서치 캐시 사용")
+                    return content
+        except Exception:
+            pass
+
+    print("[Brain] 글로벌 리서치 수집 중 (Citi / GS / MS 웹검색)...")
+
+    query = (
+        f"오늘 날짜 기준({date.today().isoformat()}) Citi, Goldman Sachs, Morgan Stanley의 "
+        "최신 주식 투자 리서치를 검색하세요. "
+        "다음을 포함해 한국어로 간결하게 요약하세요:\n"
+        "1. Citi 추천 섹터 및 테마\n"
+        "2. GS / MS 주요 Top Pick 종목\n"
+        "3. 공통적으로 언급되는 2026년 핵심 투자 테마\n"
+        "불확실한 내용은 생략하고, 확인된 내용만 3~5줄로 요약하세요."
+    )
+
+    try:
+        messages = [{"role": "user", "content": query}]
+
+        # ── web_search 툴로 Claude가 직접 검색 ───────────────
+        while True:
+            response = client.messages.create(
+                model=settings.BRAIN_MODEL_STAGE1,
+                max_tokens=1024,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=messages,
+                betas=["web-search-2025-03-05"],
+            )
+
+            if response.stop_reason == "end_turn":
+                content = ""
+                for block in response.content:
+                    if hasattr(block, "text") and block.text:
+                        content += block.text
+                break
+
+            if response.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": response.content})
+                tool_results = [
+                    {"type": "tool_result", "tool_use_id": b.id, "content": ""}
+                    for b in response.content
+                    if hasattr(b, "type") and b.type == "tool_use"
+                ]
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                content = ""
+                break
+
+        content = content.strip()
+        print(f"[Brain] 리서치 수집 완료:\n  {content[:120]}...")
+
+        # ── 캐시 저장 ─────────────────────────────────────────
+        _RESEARCH_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _RESEARCH_CACHE.write_text(
+            json.dumps({"date": date.today().isoformat(), "content": content},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return content
+
+    except Exception as e:
+        print(f"[Brain] 리서치 수집 실패 (무시하고 계속): {e}")
+        return ""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -57,7 +239,7 @@ def _load_pool_cache() -> list:
     return []
 
 
-def _save_pool_cache(pool: list):
+def _save_pool_cache(pool: list, universe_data: list = None):
     _POOL_CACHE.parent.mkdir(parents=True, exist_ok=True)
     from datetime import datetime, timedelta
     today_dt = datetime.today()
@@ -66,8 +248,81 @@ def _save_pool_cache(pool: list):
         "date": date.today().isoformat(),
         "week": monday,
         "pool": pool,
+        "universe_data": universe_data or [],
     }
     _POOL_CACHE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_universe_cache() -> dict:
+    """pool_cache에서 종목별 ATR/52w 데이터 로드 (코드 → dict)"""
+    if not _POOL_CACHE.exists():
+        return {}
+    try:
+        data = json.loads(_POOL_CACHE.read_text(encoding="utf-8"))
+        if data.get("date") == date.today().isoformat():
+            return {d["code"]: d for d in data.get("universe_data", [])}
+    except Exception:
+        pass
+    return {}
+
+
+# ══════════════════════════════════════════════════════════════
+# 시장 국면 감지 (SMA200 기반)
+# ══════════════════════════════════════════════════════════════
+
+def get_market_regime() -> dict:
+    """
+    KODEX 200 종가 기준 SMA200 비교 → bull/bear 국면 판단.
+    bear 국면에서는 신규 매수 차단 (runner.py에서 사용).
+    """
+    try:
+        raw   = yf.download("069500.KS", period="1y", auto_adjust=True, progress=False)
+        close = raw["Close"].squeeze().dropna()
+        sma200 = close.rolling(200).mean()
+        current = float(close.iloc[-1])
+        sma     = float(sma200.iloc[-1])
+        is_bull = current > sma
+        gap_pct = (current - sma) / sma * 100
+        regime  = "bull" if is_bull else "bear"
+        result = {"regime": regime, "is_bull": is_bull,
+                  "kospi": round(current, 2), "sma200": round(sma, 2),
+                  "gap_pct": round(gap_pct, 2),
+                  "updated_at": date.today().isoformat()}
+        print(f"[Brain] 시장 국면: {regime} | KODEX200 {current:,.2f} vs SMA200 {sma:,.2f} ({gap_pct:+.1f}%)")
+        _REGIME_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        # 이력 누적 (최근 90일)
+        history = []
+        if _REGIME_CACHE.exists():
+            try:
+                history = json.loads(_REGIME_CACHE.read_text(encoding="utf-8"))
+            except Exception:
+                history = []
+        history = [h for h in history if h.get("updated_at", "") > (date.today().isoformat()[:7] + "-01")]
+        if not history or history[-1].get("updated_at") != date.today().isoformat():
+            history.append(result)
+        _REGIME_CACHE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        return result
+    except Exception as e:
+        print(f"[Brain] 국면 판단 실패 (bull 가정): {e}")
+        return {"regime": "bull", "is_bull": True, "kospi": 0, "sma200": 0, "gap_pct": 0}
+
+
+def get_market_regime_us() -> dict:
+    """QQQ SMA200 기준 미국장 국면 판단"""
+    try:
+        raw   = yf.download("QQQ", period="1y", auto_adjust=True, progress=False)
+        close = raw["Close"].squeeze().dropna()
+        sma200 = close.rolling(200).mean()
+        current = float(close.iloc[-1])
+        sma     = float(sma200.iloc[-1])
+        is_bull = current > sma
+        gap_pct = (current - sma) / sma * 100
+        regime  = "bull" if is_bull else "bear"
+        print(f"[Brain-US] 시장 국면: {regime} | QQQ {current:.2f} vs SMA200 {sma:.2f} ({gap_pct:+.1f}%)")
+        return {"regime": regime, "is_bull": is_bull, "qqq": current, "sma200": sma, "gap_pct": gap_pct}
+    except Exception as e:
+        print(f"[Brain-US] 국면 판단 실패 (bull 가정): {e}")
+        return {"regime": "bull", "is_bull": True, "qqq": 0, "sma200": 0, "gap_pct": 0}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -81,7 +336,7 @@ def _fetch_universe_data() -> list[dict]:
     code_map  = {f"{s['code']}.KS": s for s in universe}
 
     print(f"[Brain] 유니버스 {len(universe)}종목 데이터 수집 중...")
-    raw = yf.download(yf_list, period="3mo", auto_adjust=True, progress=False)
+    raw = yf.download(yf_list, period="6mo", auto_adjust=True, progress=False)
 
     results = []
     for yf_ticker, stock in code_map.items():
@@ -99,11 +354,21 @@ def _fetch_universe_data() -> list[dict]:
 
             current = float(close.iloc[-1])
             ret_1m  = (close.iloc[-1] / close.iloc[-20] - 1) * 100
-            ret_3m  = (close.iloc[-1] / close.iloc[0]  - 1) * 100
+            ret_3m  = (close.iloc[-1] / close.iloc[-63] - 1) * 100 if len(close) >= 63 else ret_1m
+            ret_6m  = (close.iloc[-1] / close.iloc[0]   - 1) * 100
             h52     = float(high.max())
             l52     = float(low.min())
             pos_52w = (current - l52) / (h52 - l52) * 100 if h52 != l52 else 50
             vol_r   = float(volume.iloc[-5:].mean()) / float(volume.iloc[-20:].mean() or 1)
+
+            # 14일 실제 ATR (True Range = max(H-L, |H-Cprev|, |L-Cprev|))
+            hi = high.values
+            lo = low.values
+            cl = close.values
+            tr = np.maximum(hi[1:] - lo[1:],
+                            np.maximum(np.abs(hi[1:] - cl[:-1]),
+                                       np.abs(lo[1:] - cl[:-1])))
+            atr14 = float(tr[-14:].mean()) if len(tr) >= 14 else current * 0.02
 
             results.append({
                 "code":    stock["code"],
@@ -112,8 +377,12 @@ def _fetch_universe_data() -> list[dict]:
                 "current": round(current),
                 "ret_1m":  round(ret_1m, 2),
                 "ret_3m":  round(ret_3m, 2),
+                "ret_6m":  round(ret_6m, 2),
                 "pos_52w": round(pos_52w, 1),
                 "vol_ratio": round(vol_r, 2),
+                "atr":     round(atr14, 2),
+                "high_52w": round(h52),
+                "low_52w":  round(l52),
             })
         except Exception:
             continue
@@ -158,91 +427,90 @@ def _fetch_supply_demand() -> dict:
 
 
 def _select_candidate_pool(universe_data: list[dict], supply: dict) -> list[str]:
-    """Claude에게 유니버스 데이터 + 수급 데이터를 주고 후보 풀 선정"""
+    """
+    팩터 점수로 1차 선별 → Claude가 애널리스트 역할로 보정.
+    """
+    import factor as factor_engine
     pool_size = settings.BRAIN_POOL_SIZE
 
-    # ── 가격 모멘텀 데이터 ──────────────────────────────────
-    price_info = "\n".join(
-        f"- {d['name']}({d['code']}) [{d['sector']}] "
-        f"| 1개월 {d['ret_1m']:+.1f}% | 3개월 {d['ret_3m']:+.1f}% "
-        f"| 52주위치 {d['pos_52w']:.0f}% | 거래량비율 {d['vol_ratio']:.1f}x"
-        for d in universe_data
+    # ── 팩터 스코어링 (퀀트 모델) ──────────────────────────
+    # 상위 pool_size*2 개를 1차 선별 (Claude 검토 범위 축소)
+    candidates, all_scored = factor_engine.select_pool(
+        universe_data, supply, pool_size=pool_size * 2
     )
 
-    # ── 수급 데이터 ─────────────────────────────────────────
-    idx   = supply.get("index", {})
-    kospi = idx.get("KOSPI", {})
+    # ── 팩터 결과 포매팅 ────────────────────────────────────
+    factor_info = "\n".join(
+        f"- {d['name']}({d['code']}) [{d['sector']}] "
+        f"| 팩터점수 {d['factor_score']:.3f} "
+        f"| 1M {d['ret_1m']:+.1f}% | 3M {d['ret_3m']:+.1f}% | 6M {d.get('ret_6m', 0):+.1f}% "
+        f"| 외국인 {supply.get('flow',{}).get(d['code'],{}).get('foreign_net',0):+,}주 "
+        f"| 기관 {supply.get('flow',{}).get(d['code'],{}).get('inst_net',0):+,}주 "
+        f"| 섹터강도 {d.get('sector_score', 0):.2f}"
+        for d in candidates
+    )
+
+    # ── 시장 컨텍스트 ───────────────────────────────────────
+    idx    = supply.get("index", {})
+    kospi  = idx.get("KOSPI",  {})
     kosdaq = idx.get("KOSDAQ", {})
     index_info = (
-        f"KOSPI {kospi.get('current', 0):,.2f} ({kospi.get('change_pct', 0):+.2f}%) | "
-        f"KOSDAQ {kosdaq.get('current', 0):,.2f} ({kosdaq.get('change_pct', 0):+.2f}%)"
+        f"KOSPI {kospi.get('current',0):,.2f} ({kospi.get('change_pct',0):+.2f}%) | "
+        f"KOSDAQ {kosdaq.get('current',0):,.2f} ({kosdaq.get('change_pct',0):+.2f}%)"
     )
 
-    sector_rows = supply.get("sectors", [])
-    sector_info = "\n".join(
-        f"  {s['name']}: {s['change_pct']:+.2f}%"
-        for s in sorted(sector_rows, key=lambda x: x["change_pct"], reverse=True)[:10]
-    ) or "  (데이터 없음)"
+    # ── 리서치 컨텍스트 ────────────────────────────────────
+    research_ctx = _fetch_research()
+    research_section = f"\n=== 글로벌 IB 리서치 (Citi·GS·MS) ===\n{research_ctx}\n" if research_ctx else ""
 
-    flow_map = supply.get("flow", {})
-    flow_lines = []
-    for d in universe_data:
-        f = flow_map.get(d["code"], {})
-        fn, inst = f.get("foreign_net", 0), f.get("inst_net", 0)
-        if fn != 0 or inst != 0:
-            flow_lines.append(
-                f"  {d['name']}({d['code']}): 외국인 {fn:+,}주 | 기관 {inst:+,}주"
-            )
-    flow_info = "\n".join(flow_lines) or "  (데이터 없음)"
-
-    prompt = f"""당신은 한국 주식 퀀트 펀드매니저입니다.
-아래 데이터를 종합해 오늘 집중 모니터링할 후보 풀 {pool_size}개를 선정하세요.
+    prompt = f"""당신은 퀀트 펀드의 시니어 애널리스트입니다.
+퀀트 팩터 모델이 1차 선별한 {len(candidates)}개 후보에서 최종 {pool_size}개를 선정하세요.
 
 === 오늘 시장 지수 ===
 {index_info}
+{research_section}
+=== 팩터 모델 1차 선별 결과 (점수 내림차순) ===
+{factor_info}
 
-=== 업종별 등락 (상위 10) ===
-{sector_info}
+=== 당신의 역할 ===
+- 팩터 점수는 이미 수치 검증 완료. 기본적으로 상위 종목을 선택.
+- 단, 아래 경우 하위 종목으로 대체:
+  * 최근 악재 뉴스 (회계부정, 대규모 소송, 경영진 리스크)
+  * 글로벌 리서치와 정반대 섹터
+  * 급등 후 과열 징후 (팩터는 못 잡는 정성 판단)
+- 섹터 분산: 동일 섹터 3개 이상 금지
 
-=== 종목별 외국인·기관 순매수 ===
-{flow_info}
-
-=== 유니버스 가격 모멘텀 (최근 3개월) ===
-{price_info}
-
-=== 선정 기준 (우선순위 순) ===
-1. 수급 우선: 외국인 또는 기관이 오늘 순매수 중인 종목
-2. 섹터 모멘텀: 오늘 강세 업종에 속한 종목
-3. 가격 모멘텀: 1개월·3개월 수익률 양호
-4. 거래량 확인: 거래량비율 1.2x 이상
-5. 52주 위치: 20~85% 구간 선호
-6. 섹터 분산: 최소 3개 섹터에서 선정
-
-반드시 아래 JSON 형식으로만 답하세요.
-{{
-  "pool": ["코드1", "코드2", ...],
-  "analysis": "시장 상황 및 수급 기반 선정 근거 3~5줄"
-}}
-
+select_pool 도구를 호출해 선정 결과를 반환하세요.
 정확히 {pool_size}개를 선정하세요."""
 
     msg = client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=1024,
+        model=settings.BRAIN_MODEL_STAGE1,
+        max_tokens=2048,
         thinking={"type": "adaptive"},
+        tools=[_TOOL_SELECT_POOL],
+        tool_choice={"type": "any"},
         messages=[{"role": "user", "content": prompt}],
     )
-    result   = json.loads(msg.content[-1].text.strip())
+    result   = _extract_tool_result(msg)
     pool     = result.get("pool", [])
     analysis = result.get("analysis", "")
 
-    print(f"\n[Brain] ── 1단계: 후보 풀 선정 ──────────────────")
-    print(f"  선정 종목: {pool}")
+    # ── 팩터 점수 상위 종목 출력 ────────────────────────────
+    print(f"\n[Brain] ── 1단계: 팩터 스코어링 결과 ──────────────")
+    for d in all_scored[:10]:
+        print(f"  {d['factor_score']:.3f} | {d['name']}({d['code']}) [{d['sector']}]")
+    print(f"\n[Brain] ── AI 보정 후 최종 후보 풀 ─────────────────")
+    print(f"  선정: {pool}")
     for line in analysis.split("\n"):
         if line.strip():
             print(f"  {line.strip()}")
     print()
-    return pool
+    return pool, all_scored   # all_scored = factor_score 포함한 전체 유니버스
+
+
+def get_universe_cache() -> dict:
+    """runner.py에서 ATR/52w 데이터를 꺼내 쓸 수 있도록 공개"""
+    return _load_universe_cache()
 
 
 def get_candidate_pool() -> list[str]:
@@ -261,9 +529,10 @@ def get_candidate_pool() -> list[str]:
         print("[Brain] 유니버스 데이터 수집 실패 — 빈 풀 반환")
         return []
 
-    supply = _fetch_supply_demand()
-    pool   = _select_candidate_pool(universe_data, supply)
-    _save_pool_cache(pool)
+    supply         = _fetch_supply_demand()
+    pool, all_scored = _select_candidate_pool(universe_data, supply)
+    # all_scored: factor_score / sector_score / foreign_flow / inst_flow 포함한 전체 유니버스
+    _save_pool_cache(pool, all_scored)
     return pool
 
 
@@ -273,102 +542,95 @@ def get_candidate_pool() -> list[str]:
 
 def get_targets(market_data: list[dict]) -> list[str]:
     """
-    후보 풀의 실시간 데이터를 보고 오늘 매수할 종목 선정.
-    runner.py에서 호출.
+    당일 모멘텀 팩터로 1차 순위 → Claude가 이상 징후 필터.
     """
+    import factor as factor_engine
     buy_limit = settings.BRAIN_BUY_LIMIT
+
+    # ── 당일 모멘텀 스코어링 ────────────────────────────────
+    scored = factor_engine.score_intraday(market_data)
 
     info = "\n".join(
         f"- {d['name']}({d['code']}): {d['current']:,}원 "
         f"| 등락 {d['change_pct']:+.2f}% | 거래량 {d['volume']:,} "
-        f"| 52주고 {d['high_52w']:,} / 52주저 {d['low_52w']:,}"
-        for d in market_data
+        f"| 당일점수 {d['intraday_score']:.3f}"
+        for d in scored
     )
 
-    prompt = f"""당신은 단기 트레이딩 전문 퀀트입니다.
-오늘 후보 풀에서 실제 매수할 종목을 최종 선정하세요.
+    prompt = f"""당신은 퀀트 펀드의 트레이딩 담당 애널리스트입니다.
+당일 모멘텀 점수 기준으로 정렬된 후보 풀에서 실제 매수 종목을 확정하세요.
 
-=== 후보 풀 실시간 데이터 ===
+=== 후보 풀 당일 데이터 (점수 내림차순) ===
 {info}
 
-=== 매수 기준 ===
-- 오늘 상승 모멘텀이 살아있는 종목
-- 거래량이 뒷받침되는 종목
-- 52주 고점 대비 합리적인 가격대
-- 리스크 대비 기대수익이 명확한 종목
+=== 역할 ===
+- 기본적으로 점수 상위 {buy_limit}개를 선택.
+- 단, 명백한 이상 징후(갭 하락, 비정상 거래량 급락 등)가 있는 종목은 제외.
+- 조건 미충족 종목이 있으면 빈 배열로 반환 (억지로 채우지 마세요).
 
-반드시 아래 JSON 형식으로만 답하세요.
-{{
-  "selected": ["코드1", "코드2"],
-  "reason": "선정 이유 한 문장"
-}}
-
-최대 {buy_limit}개. 조건 미충족 시 빈 배열."""
+select_targets 도구를 호출해 결과를 반환하세요.
+최대 {buy_limit}개."""
 
     msg = client.messages.create(
-        model="claude-opus-4-7",
+        model=settings.BRAIN_MODEL_STAGE2,
         max_tokens=512,
-        thinking={"type": "adaptive"},
+        output_config={"effort": "medium"},
+        tools=[_TOOL_SELECT_TARGETS],
+        tool_choice={"type": "any"},
         messages=[{"role": "user", "content": prompt}],
     )
-    result   = json.loads(msg.content[-1].text.strip())
+    result   = _extract_tool_result(msg)
     selected = result.get("selected", [])
     reason   = result.get("reason", "")
 
-    print(f"[Brain] ── 2단계: 매수 종목 선정 ──────────────────")
-    print(f"  선정: {[settings.UNIVERSE_MAP.get(c, c) for c in selected]}")
-    print(f"  이유: {reason}\n")
+    print(f"[Brain] ── 2단계: 당일 모멘텀 스코어 + AI 필터 ──────")
+    for d in scored:
+        mark = "O" if d["code"] in selected else " "
+        print(f"  [{mark}] {d['intraday_score']:.3f} | {d['name']}({d['code']}) {d['change_pct']:+.2f}%")
+    print(f"  → {reason}\n")
     return selected
 
 
 # ══════════════════════════════════════════════════════════════
-# Stage 3 — 개별 최종 확인
+# Stage 3 — 매도 판단
 # ══════════════════════════════════════════════════════════════
 
-def should_buy(data: dict) -> bool:
-    """선정된 종목 매수 최종 확인"""
-    prompt = f"""종목: {data.get('name', data['code'])}({data['code']})
-현재가: {data['current']:,}원 | 전일대비: {data['change_pct']:+.2f}%
-시가: {data['open']:,}원 | 거래량: {data['volume']:,}
-52주 최고: {data['high_52w']:,}원 / 최저: {data['low_52w']:,}원
-
-지금 시장가 매수를 실행해도 괜찮습니까?
-{{"buy": true, "reason": "이유"}}"""
-
-    msg    = client.messages.create(
-        model="claude-opus-4-7", max_tokens=256,
-        thinking={"type": "adaptive"},
-        messages=[{"role": "user", "content": prompt}],
-    )
-    result = json.loads(msg.content[-1].text.strip())
-    buy    = result.get("buy", False)
-    print(f"  [3단계] {data['code']} 최종확인: "
-          f"{'✅ 매수' if buy else '❌ 패스'} — {result.get('reason', '')}")
-    return buy
-
-
 def should_sell(data: dict, holding: dict) -> bool:
-    """보유 종목 매도 판단"""
+    """
+    매도 판단:
+    1. 규칙 기반 (즉시): 익절 기준 초과 → 바로 true
+    2. Claude (Haiku): 그 외 정성 판단
+    """
+    profit_pct = float(holding.get("evlu_pfls_rt", 0))
     avg_price  = float(holding.get("pchs_avg_pric", 0))
     qty        = int(holding.get("hldg_qty", 0))
-    profit_pct = float(holding.get("evlu_pfls_rt", 0))
 
+    # ── 규칙 기반: 익절 ────────────────────────────────────
+    if profit_pct >= settings.RISK_TAKE_PROFIT_PCT:
+        print(f"  [익절] {data['code']} {profit_pct:+.2f}% >= {settings.RISK_TAKE_PROFIT_PCT}% → 즉시 매도")
+        return True
+
+    # ── Claude: 정성 판단 (애매한 구간만) ─────────────────
     prompt = f"""보유 종목: {data.get('name', data['code'])}({data['code']})
 보유 {qty}주 | 평균매수가 {avg_price:,.0f}원 | 현재가 {data['current']:,}원
 평가손익: {profit_pct:+.2f}% | 전일대비: {data['change_pct']:+.2f}%
+52주 최고: {data['high_52w']:,}원 / 최저: {data['low_52w']:,}원
 
-원칙: +7% 이상 익절 / -5% 이하 손절 / 그 외 추세 종합 판단
-{{"sell": false, "reason": "이유"}}"""
+익절({settings.RISK_TAKE_PROFIT_PCT}%) 미달, 손절(-{abs(settings.STOP_LOSS_PCT)}%) 미달 구간.
+추세가 꺾였거나 보유 가치가 없으면 매도(sell=true), 유지할만하면 매도하지 마세요(sell=false).
+sell_decision 도구를 호출해 판단 결과를 반환하세요."""
 
     msg    = client.messages.create(
-        model="claude-opus-4-7", max_tokens=256,
-        thinking={"type": "adaptive"},
+        model=settings.BRAIN_MODEL_STAGE3,
+        max_tokens=256,
+        tools=[_TOOL_SELL_DECISION],
+        tool_choice={"type": "any"},
         messages=[{"role": "user", "content": prompt}],
     )
-    result = json.loads(msg.content[-1].text.strip())
+    result = _extract_tool_result(msg)
     sell   = result.get("sell", False)
     print(f"  [매도판단] {data['code']}: "
-          f"{'✅ 매도' if sell else '🔒 유지'} — {result.get('reason', '')}")
+          f"{'매도' if sell else '유지'} — {result.get('reason', '')}")
     return sell
 
 
@@ -396,12 +658,17 @@ def _load_pool_cache_us() -> list:
     return []
 
 
-def _save_pool_cache_us(pool: list):
+def _save_pool_cache_us(pool: list, universe_data: list = None):
     _POOL_CACHE_US.parent.mkdir(parents=True, exist_ok=True)
     from datetime import datetime, timedelta
     today_dt = datetime.today()
     monday   = (today_dt - timedelta(days=today_dt.weekday())).strftime("%Y-%m-%d")
-    payload  = {"date": date.today().isoformat(), "week": monday, "pool": pool}
+    payload  = {
+        "date": date.today().isoformat(),
+        "week": monday,
+        "pool": pool,
+        "universe_data": universe_data or [],
+    }
     _POOL_CACHE_US.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -412,7 +679,7 @@ def _fetch_universe_data_us() -> list[dict]:
     ticker_map = {s["ticker"]: s for s in universe}
 
     print(f"[Brain-US] 미국 유니버스 {len(universe)}종목 데이터 수집 중...")
-    raw = yf.download(tickers, period="3mo", auto_adjust=True, progress=False)
+    raw = yf.download(tickers, period="6mo", auto_adjust=True, progress=False)
 
     results = []
     for ticker, stock in ticker_map.items():
@@ -430,11 +697,20 @@ def _fetch_universe_data_us() -> list[dict]:
 
             current = float(close.iloc[-1])
             ret_1m  = (close.iloc[-1] / close.iloc[-20] - 1) * 100
-            ret_3m  = (close.iloc[-1] / close.iloc[0]  - 1) * 100
+            ret_3m  = (close.iloc[-1] / close.iloc[-63] - 1) * 100 if len(close) >= 63 else ret_1m
+            ret_6m  = (close.iloc[-1] / close.iloc[0]   - 1) * 100
             h52     = float(high.max())
             l52     = float(low.min())
             pos_52w = (current - l52) / (h52 - l52) * 100 if h52 != l52 else 50
             vol_r   = float(volume.iloc[-5:].mean()) / float(volume.iloc[-20:].mean() or 1)
+
+            hi = high.values
+            lo = low.values
+            cl = close.values
+            tr = np.maximum(hi[1:] - lo[1:],
+                            np.maximum(np.abs(hi[1:] - cl[:-1]),
+                                       np.abs(lo[1:] - cl[:-1])))
+            atr14 = float(tr[-14:].mean()) if len(tr) >= 14 else current * 0.02
 
             results.append({
                 "ticker":    ticker,
@@ -445,8 +721,12 @@ def _fetch_universe_data_us() -> list[dict]:
                 "current":   round(current, 2),
                 "ret_1m":    round(ret_1m, 2),
                 "ret_3m":    round(ret_3m, 2),
+                "ret_6m":    round(ret_6m, 2),
                 "pos_52w":   round(pos_52w, 1),
                 "vol_ratio": round(vol_r, 2),
+                "atr":       round(atr14, 4),
+                "high_52w":  round(h52, 2),
+                "low_52w":   round(l52, 2),
             })
         except Exception:
             continue
@@ -456,55 +736,71 @@ def _fetch_universe_data_us() -> list[dict]:
 
 
 def _select_candidate_pool_us(universe_data: list[dict]) -> list[str]:
-    """Claude에게 미국 유니버스 데이터를 주고 후보 풀 선정"""
+    """
+    팩터 점수로 1차 선별 → Claude가 애널리스트 역할로 보정 (미국장 버전).
+    US는 수급 데이터 없으므로 supply={} 로 넘기고 momentum/volume/pos_52w만 사용.
+    """
+    import factor as factor_engine
     pool_size = settings.BRAIN_POOL_SIZE_US
 
-    info = "\n".join(
-        f"- {d['name']}({d['ticker']}) [{d['sector']}] "
-        f"| 1개월 {d['ret_1m']:+.1f}% | 3개월 {d['ret_3m']:+.1f}% "
-        f"| 52주위치 {d['pos_52w']:.0f}% | 거래량비율 {d['vol_ratio']:.1f}x"
-        for d in universe_data
+    # ── 팩터 스코어링 (퀀트 모델) ──────────────────────────
+    candidates, all_scored = factor_engine.select_pool(
+        universe_data, supply={}, pool_size=pool_size * 2
     )
 
-    prompt = f"""당신은 미국 주식 퀀트 트레이더입니다.
-아래 {len(universe_data)}개 종목에서 오늘 밤 집중 모니터링할 후보 풀 {pool_size}개를 선정하세요.
+    # ── 팩터 결과 포매팅 ────────────────────────────────────
+    factor_info = "\n".join(
+        f"- {d['name']}({d['ticker']}) [{d['sector']}] "
+        f"| 팩터점수 {d['factor_score']:.3f} "
+        f"| 1M {d['ret_1m']:+.1f}% | 3M {d['ret_3m']:+.1f}% | 6M {d.get('ret_6m', 0):+.1f}% "
+        f"| 거래량비율 {d['vol_ratio']:.1f}x | 52주위치 {d['pos_52w']:.0f}%"
+        for d in candidates
+    )
 
-=== 미국 유니버스 데이터 (최근 3개월) ===
-{info}
+    research_ctx = _fetch_research()
+    research_section = f"\n=== 글로벌 IB 리서치 (Citi·GS·MS) ===\n{research_ctx}\n" if research_ctx else ""
 
-=== 선정 기준 ===
-- AI/반도체/빅테크 테마 모멘텀 우선
-- 1개월·3개월 수익률 상위 종목
-- 거래량비율 1.2x 이상 긍정 신호
-- 52주 위치 20~90% 구간 선호
-- ETF는 시장 방향성 판단용으로 1개 이하로 제한
+    prompt = f"""당신은 퀀트 펀드의 시니어 미국주식 애널리스트입니다.
+퀀트 팩터 모델이 1차 선별한 {len(candidates)}개 후보에서 최종 {pool_size}개를 선정하세요.
+
+{research_section}
+=== 팩터 모델 1차 선별 결과 (점수 내림차순) ===
+{factor_info}
+
+=== 당신의 역할 ===
+- 팩터 점수는 이미 수치 검증 완료. 기본적으로 상위 종목을 선택.
+- 단, 아래 경우 하위 종목으로 대체:
+  * 최근 악재 뉴스 또는 실적 쇼크
+  * 글로벌 리서치와 정반대 섹터
+  * 급등 후 과열 징후
+- ETF는 1개 이하로 제한
 - 섹터 분산: 최소 2개 섹터 이상
 
-반드시 아래 JSON 형식으로만 답하세요.
-{{
-  "pool": ["TICKER1", "TICKER2", ...],
-  "analysis": "미국 시장 상황 및 선정 근거 3~5줄"
-}}
-
+select_pool 도구를 호출해 선정 결과를 반환하세요.
 정확히 {pool_size}개를 선정하세요."""
 
     msg = client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=1024,
+        model=settings.BRAIN_MODEL_STAGE1,
+        max_tokens=2048,
         thinking={"type": "adaptive"},
+        tools=[_TOOL_SELECT_POOL],
+        tool_choice={"type": "any"},
         messages=[{"role": "user", "content": prompt}],
     )
-    result   = json.loads(msg.content[-1].text.strip())
+    result   = _extract_tool_result(msg)
     pool     = result.get("pool", [])
     analysis = result.get("analysis", "")
 
-    print(f"\n[Brain-US] ── 1단계: 미국 후보 풀 선정 ──────────")
-    print(f"  선정 종목: {pool}")
+    print(f"\n[Brain-US] ── 1단계: 팩터 스코어링 결과 ──────────")
+    for d in all_scored[:10]:
+        print(f"  {d['factor_score']:.3f} | {d['name']}({d['ticker']}) [{d['sector']}]")
+    print(f"\n[Brain-US] ── AI 보정 후 최종 후보 풀 ─────────────")
+    print(f"  선정: {pool}")
     for line in analysis.split("\n"):
         if line.strip():
             print(f"  {line.strip()}")
     print()
-    return pool
+    return pool, all_scored
 
 
 def get_candidate_pool_us() -> list[str]:
@@ -520,100 +816,96 @@ def get_candidate_pool_us() -> list[str]:
         print("[Brain-US] 유니버스 데이터 수집 실패 — 빈 풀 반환")
         return []
 
-    pool = _select_candidate_pool_us(universe_data)
-    _save_pool_cache_us(pool)
+    pool, all_scored = _select_candidate_pool_us(universe_data)
+    _save_pool_cache_us(pool, all_scored)
     return pool
 
 
 def get_targets_us(market_data: list[dict]) -> list[str]:
-    """미국 후보 풀 실시간 데이터 → 최종 매수 종목 선정"""
+    """
+    당일 모멘텀 팩터로 1차 순위 → Claude가 이상 징후 필터 (미국장 버전).
+    """
+    import factor as factor_engine
     buy_limit = settings.BRAIN_BUY_LIMIT_US
+
+    # ── 당일 모멘텀 스코어링 ────────────────────────────────
+    scored = factor_engine.score_intraday(market_data)
 
     info = "\n".join(
         f"- {d['name']}({d['ticker']}): ${d['current']:.2f} "
         f"| 등락 {d['change_pct']:+.2f}% | 거래량 {d['volume']:,} "
-        f"| 52주고 ${d['high_52w']:.2f} / 52주저 ${d['low_52w']:.2f}"
-        for d in market_data
+        f"| 당일점수 {d['intraday_score']:.3f}"
+        for d in scored
     )
 
-    prompt = f"""당신은 미국 주식 단기 트레이딩 전문 퀀트입니다.
-오늘 밤 후보 풀에서 실제 매수할 종목을 최종 선정하세요.
+    prompt = f"""당신은 퀀트 펀드의 미국주식 트레이딩 담당 애널리스트입니다.
+당일 모멘텀 점수 기준으로 정렬된 후보 풀에서 실제 매수 종목을 확정하세요.
 
-=== 후보 풀 실시간 데이터 (USD) ===
+=== 후보 풀 당일 데이터 (점수 내림차순) ===
 {info}
 
-=== 매수 기준 ===
-- 장 시작 후 상승 모멘텀이 살아있는 종목
-- 거래량이 평소 대비 높은 종목
-- 52주 고점 대비 합리적인 가격대
-- AI/반도체 섹터 강세 시 해당 종목 우선
+=== 역할 ===
+- 기본적으로 점수 상위 {buy_limit}개를 선택.
+- 단, 명백한 이상 징후(갭 하락, 비정상 거래량 급락 등)가 있는 종목은 제외.
+- 조건 미충족 종목이 있으면 빈 배열로 반환 (억지로 채우지 마세요).
 
-반드시 아래 JSON 형식으로만 답하세요.
-{{
-  "selected": ["TICKER1", "TICKER2"],
-  "reason": "선정 이유 한 문장"
-}}
-
-최대 {buy_limit}개. 조건 미충족 시 빈 배열."""
+select_targets 도구를 호출해 결과를 반환하세요.
+최대 {buy_limit}개."""
 
     msg = client.messages.create(
-        model="claude-opus-4-7",
+        model=settings.BRAIN_MODEL_STAGE2,
         max_tokens=512,
-        thinking={"type": "adaptive"},
+        output_config={"effort": "medium"},
+        tools=[_TOOL_SELECT_TARGETS],
+        tool_choice={"type": "any"},
         messages=[{"role": "user", "content": prompt}],
     )
-    result   = json.loads(msg.content[-1].text.strip())
+    result   = _extract_tool_result(msg)
     selected = result.get("selected", [])
     reason   = result.get("reason", "")
 
-    print(f"[Brain-US] ── 2단계: 미국 매수 종목 선정 ──────────")
-    print(f"  선정: {[settings.UNIVERSE_US_MAP.get(t, t) for t in selected]}")
-    print(f"  이유: {reason}\n")
+    print(f"[Brain-US] ── 2단계: 당일 모멘텀 스코어 + AI 필터 ──")
+    for d in scored:
+        mark = "O" if d["ticker"] in selected else " "
+        print(f"  [{mark}] {d['intraday_score']:.3f} | {d['name']}({d['ticker']}) {d['change_pct']:+.2f}%")
+    print(f"  → {reason}\n")
     return selected
 
 
-def should_buy_us(data: dict) -> bool:
-    """미국주식 매수 최종 확인"""
-    prompt = f"""종목: {data.get('name', data['ticker'])}({data['ticker']})
-현재가: ${data['current']:.2f} | 전일대비: {data['change_pct']:+.2f}%
-시가: ${data['open']:.2f} | 거래량: {data['volume']:,}
-52주 최고: ${data['high_52w']:.2f} / 최저: ${data['low_52w']:.2f}
-
-지금 시장가 매수를 실행해도 괜찮습니까?
-{{"buy": true, "reason": "이유"}}"""
-
-    msg    = client.messages.create(
-        model="claude-opus-4-7", max_tokens=256,
-        thinking={"type": "adaptive"},
-        messages=[{"role": "user", "content": prompt}],
-    )
-    result = json.loads(msg.content[-1].text.strip())
-    buy    = result.get("buy", False)
-    print(f"  [3단계-US] {data['ticker']} 최종확인: "
-          f"{'✅ 매수' if buy else '❌ 패스'} — {result.get('reason', '')}")
-    return buy
-
-
 def should_sell_us(data: dict, holding: dict) -> bool:
-    """미국주식 매도 판단"""
+    """
+    미국주식 매도 판단:
+    1. 규칙 기반 (즉시): 익절 기준 초과 → 바로 true
+    2. Claude (Haiku): 그 외 정성 판단
+    """
+    profit_pct = float(holding.get("evlu_pfls_rt", 0))
     avg_price  = float(holding.get("pchs_avg_pric", 0))
     qty        = int(holding.get("hldg_qty", 0))
-    profit_pct = float(holding.get("evlu_pfls_rt", 0))
 
+    # ── 규칙 기반: 익절 ────────────────────────────────────
+    if profit_pct >= settings.RISK_TAKE_PROFIT_PCT:
+        print(f"  [익절-US] {data['ticker']} {profit_pct:+.2f}% >= {settings.RISK_TAKE_PROFIT_PCT}% → 즉시 매도")
+        return True
+
+    # ── Claude: 정성 판단 (애매한 구간만) ─────────────────
     prompt = f"""보유 종목: {data.get('name', data['ticker'])}({data['ticker']})
 보유 {qty}주 | 평균매수가 ${avg_price:.2f} | 현재가 ${data['current']:.2f}
 평가손익: {profit_pct:+.2f}% | 전일대비: {data['change_pct']:+.2f}%
+52주 최고: ${data['high_52w']:.2f} / 최저: ${data['low_52w']:.2f}
 
-원칙: +10% 이상 익절 / -7% 이하 손절 / 그 외 추세 종합 판단
-{{"sell": false, "reason": "이유"}}"""
+익절({settings.RISK_TAKE_PROFIT_PCT}%) 미달, 손절(-{abs(settings.STOP_LOSS_PCT_US)}%) 미달 구간.
+추세가 꺾였거나 보유 가치가 없으면 매도(sell=true), 유지할만하면 매도하지 마세요(sell=false).
+sell_decision 도구를 호출해 판단 결과를 반환하세요."""
 
     msg    = client.messages.create(
-        model="claude-opus-4-7", max_tokens=256,
-        thinking={"type": "adaptive"},
+        model=settings.BRAIN_MODEL_STAGE3,
+        max_tokens=256,
+        tools=[_TOOL_SELL_DECISION],
+        tool_choice={"type": "any"},
         messages=[{"role": "user", "content": prompt}],
     )
-    result = json.loads(msg.content[-1].text.strip())
+    result = _extract_tool_result(msg)
     sell   = result.get("sell", False)
     print(f"  [매도판단-US] {data['ticker']}: "
-          f"{'✅ 매도' if sell else '🔒 유지'} — {result.get('reason', '')}")
+          f"{'매도' if sell else '유지'} — {result.get('reason', '')}")
     return sell

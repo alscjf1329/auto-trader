@@ -105,3 +105,23 @@ def log_trade(
     action_label = "🟢 매수" if action == "BUY" else "🔴 매도"
     profit_str = f" | 손익 {profit_pct:+.2f}% ({profit_amount:+,}원)" if action == "SELL" and profit_pct else ""
     print(f"[Journal] {action_label} 기록 → {name}({code}) {qty}주 @ {price:,}원{profit_str}")
+
+    # ── 텔레그램 알림 ──────────────────────────────────────
+    try:
+        import notify
+        if action == "BUY":
+            notify.alert_buy(
+                name=name, code=code, qty=qty, price=price,
+                amount=amount, mode=mode,
+            )
+        elif action == "SELL":
+            notify.alert_sell(
+                name=name, code=code, qty=qty, price=price,
+                mode=mode,
+                avg_buy_price=avg_buy_price,
+                profit_pct=profit_pct,
+                profit_amount=float(profit_amount) if profit_amount else 0.0,
+                reason=reason,
+            )
+    except Exception as _ne:
+        print(f"[Journal] 텔레그램 알림 실패: {_ne}")

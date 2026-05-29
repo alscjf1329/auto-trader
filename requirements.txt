@@ -3,5 +3,11 @@ schedule
 python-dotenv
 yfinance
 pandas
+numpy
+scipy
 anthropic
 pyyaml
+# 대시보드
+streamlit
+streamlit-autorefresh
+plotly
