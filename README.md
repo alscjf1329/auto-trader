@@ -88,8 +88,10 @@ auto-trader/
 ├── logs/                       # 런타임 생성 (git 제외)
 │   ├── trades.csv                  # 전체 거래 이력
 │   ├── trades/YYYY-MM-DD.json      # 날짜별 거래 JSON
-│   ├── pool_cache.json             # 한국 후보 풀 캐시
-│   ├── pool_cache_us.json          # 미국 후보 풀 캐시
+│   ├── pool_cache.json             # 한국 후보 풀 캐시 (Stage 1, 하루 1회)
+│   ├── pool_cache_us.json          # 미국 후보 풀 캐시 (Stage 1, 하루 1회)
+│   ├── stage2_cache.json           # 한국 Stage 2 결과 캐시 (TTL 15분)
+│   ├── stage2_cache_us.json        # 미국 Stage 2 결과 캐시 (TTL 15분)
 │   ├── regime_cache.json           # 시장 국면 이력
 │   ├── portfolio_snapshots.json    # 일별 자산 스냅샷
 │   ├── trailing_stops.json         # 트레일링 스탑 추적 데이터
@@ -313,15 +315,17 @@ IC(Information Coefficient) 백테스트로 최적화된 가중치입니다.
 │   └─ Claude Opus 4.7 (tool_use) → 최종 pool_size개 확정
 │       ※ 섹터 분산, 악재 뉴스, 글로벌 리서치 반영
 │
-├─ Stage 2: 매수 대상 선정 (30분마다)
+├─ Stage 2: 매수 대상 선정 (5분마다, batchron 연동)
 │   ├─ KIS 실시간 시세 조회
 │   ├─ 당일 모멘텀 스코어링 (등락률 50% + 거래량 30% + 52주위치 20%)
+│   ├─ [비용 절감] 상위 풀 순위 동일 + TTL 15분 이내 → Claude 스킵, 캐시 재사용
 │   ├─ [안전장치] Bear 국면 → 매수 전면 차단
 │   ├─ [안전장치] 당일 손실 한도 초과 → 매수 전면 차단
 │   ├─ [안전장치] 상관계수 필터 → r≥0.70 종목 제외
 │   └─ Claude Sonnet 4.6 (tool_use) → 이상 징후 필터 후 최대 3종목 확정
+│       ※ 실제 Claude 호출: 순위 변동 시 또는 15분마다 (하루 ~26회)
 │
-├─ Stage 3: 매도 판단 (30분마다, 보유 종목 전체)
+├─ Stage 3: 매도 판단 (3분마다, batchron stop_loss 잡)
 │   ├─ [우선] 트레일링 스탑: 최고가 대비 5% 이탈 → 즉시 매도
 │   ├─ [우선] 익절 +7% → 즉시 매도
 │   └─ Claude Haiku 4.5 (tool_use) → 정성 판단 (애매 구간)
@@ -497,8 +501,10 @@ pip install -r requirements.txt
 | `logs/runner.log` | runner.py + brain.py + factor.py 전체 stdout |
 | `logs/trades.csv` | 전체 거래 이력 (엑셀 호환) |
 | `logs/trades/YYYY-MM-DD.json` | 날짜별 거래 JSON |
-| `logs/pool_cache.json` | 당일 한국 후보 풀 + 팩터 점수 |
-| `logs/pool_cache_us.json` | 당일 미국 후보 풀 + 팩터 점수 |
+| `logs/pool_cache.json` | 당일 한국 후보 풀 + 팩터 점수 (Stage 1, 하루 1회) |
+| `logs/pool_cache_us.json` | 당일 미국 후보 풀 + 팩터 점수 (Stage 1, 하루 1회) |
+| `logs/stage2_cache.json` | 한국 Stage 2 마지막 결과 (TTL 15분) |
+| `logs/stage2_cache_us.json` | 미국 Stage 2 마지막 결과 (TTL 15분) |
 | `logs/regime_cache.json` | 시장 국면 이력 (최근 90일) |
 | `logs/portfolio_snapshots.json` | 일별 자산 스냅샷 (최근 365일) |
 | `logs/trailing_stops.json` | 트레일링 스탑 추적 중인 종목 |
@@ -516,7 +522,8 @@ pip install -r requirements.txt
 
 **Q. Claude API 비용은?**  
 Stage 1(Opus 4.7) → Stage 2(Sonnet 4.6) → Stage 3(Haiku 4.5) 단계별 비용 최적화.  
-일반적으로 하루 $0.5 ~ $2 수준.
+Stage 2는 상위 후보 순위가 바뀌거나 TTL(15분) 만료 시에만 호출 (하루 ~26회).  
+일반적으로 하루 $1 ~ $3 수준.
 
 **Q. 미국장은 언제 실행되나요?**  
 `market_open_us: "23:00"` ~ `market_close_us: "04:30"` KST (나스닥 기준).

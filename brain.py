@@ -15,7 +15,7 @@ Stage 3: 개별 최종 확인
 """
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -30,6 +30,9 @@ import kis_api
 client = anthropic.Anthropic()
 
 _POOL_CACHE      = Path(__file__).parent / "logs" / "pool_cache.json"
+_STAGE2_CACHE    = Path(__file__).parent / "logs" / "stage2_cache.json"
+_STAGE2_CACHE_US = Path(__file__).parent / "logs" / "stage2_cache_us.json"
+_STAGE2_TTL_MIN  = 15  # 동일 풀이어도 N분 후 강제 재평가
 
 # ══════════════════════════════════════════════════════════════
 # tool_use 스키마 — JSON 파싱 에러 완전 차단
@@ -126,6 +129,72 @@ def _extract_tool_result(msg) -> dict:
 
     print("[Brain] WARNING: tool_use 블록을 찾을 수 없어 빈 dict 반환")
     return {}
+
+
+# ══════════════════════════════════════════════════════════════
+# Stage2 캐시 — 동일 후보 풀이면 Claude 재호출 스킵
+# ══════════════════════════════════════════════════════════════
+
+def _load_stage2_cache(path: Path) -> dict:
+    """Stage2 결과 캐시 로드. 없거나 파싱 실패 시 빈 dict."""
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_stage2_cache(path: Path, top_codes: list, selected: list, reason: str):
+    """Stage2 결과 캐시 저장."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "date":      date.today().isoformat(),
+        "timestamp": datetime.now().isoformat(),
+        "top_codes": top_codes,
+        "selected":  selected,
+        "reason":    reason,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _stage2_cache_hit(path: Path, top_codes: list) -> tuple[bool, list, str]:
+    """
+    Stage2 캐시 히트 여부 판단.
+
+    조건 (모두 충족 시 True):
+      1. 오늘 날짜 캐시
+      2. 상위 후보 코드 순서 동일
+      3. 마지막 Claude 호출로부터 TTL(_STAGE2_TTL_MIN) 미경과
+
+    Returns: (hit: bool, selected: list, reason: str)
+    """
+    cache = _load_stage2_cache(path)
+    if not cache:
+        return False, [], ""
+
+    if cache.get("date") != date.today().isoformat():
+        return False, [], ""
+
+    if cache.get("top_codes") != top_codes:
+        return False, [], ""
+
+    try:
+        last_ts = datetime.fromisoformat(cache["timestamp"])
+        elapsed = (datetime.now() - last_ts).total_seconds() / 60
+    except Exception:
+        return False, [], ""
+
+    if elapsed >= _STAGE2_TTL_MIN:
+        print(
+            f"[Brain] Stage2 TTL 만료 — {elapsed:.0f}분 경과 "
+            f"(TTL {_STAGE2_TTL_MIN}분) → 재평가"
+        )
+        return False, [], ""
+
+    return True, cache.get("selected", []), cache.get("reason", "")
+
+
 _POOL_CACHE_US   = Path(__file__).parent / "logs" / "pool_cache_us.json"
 _RESEARCH_CACHE  = Path(__file__).parent / "logs" / "research_cache.json"
 _REGIME_CACHE    = Path(__file__).parent / "logs" / "regime_cache.json"
@@ -543,6 +612,9 @@ def get_candidate_pool() -> list[str]:
 def get_targets(market_data: list[dict]) -> list[str]:
     """
     당일 모멘텀 팩터로 1차 순위 → Claude가 이상 징후 필터.
+
+    비용 절감: 상위 후보 코드 순서가 직전 호출과 동일하고 TTL 이내면
+    Claude 재호출 없이 이전 결과를 반환.
     """
     import factor as factor_engine
     buy_limit = settings.BRAIN_BUY_LIMIT
@@ -550,6 +622,23 @@ def get_targets(market_data: list[dict]) -> list[str]:
     # ── 당일 모멘텀 스코어링 ────────────────────────────────
     scored = factor_engine.score_intraday(market_data)
 
+    # 캐시 비교 기준: 상위 buy_limit*2 코드 순서
+    top_codes = [d["code"] for d in scored[: buy_limit * 2]]
+
+    # ── Stage2 캐시 히트 체크 ───────────────────────────────
+    hit, cached_selected, cached_reason = _stage2_cache_hit(_STAGE2_CACHE, top_codes)
+    if hit:
+        elapsed = (datetime.now() - datetime.fromisoformat(
+            _load_stage2_cache(_STAGE2_CACHE)["timestamp"]
+        )).total_seconds() / 60
+        print(
+            f"[Brain] Stage2 캐시 재사용 — 상위 풀 동일 "
+            f"({elapsed:.0f}분 경과 / TTL {_STAGE2_TTL_MIN}분)\n"
+            f"  → {cached_reason}\n"
+        )
+        return cached_selected
+
+    # ── Claude Stage2 호출 ──────────────────────────────────
     info = "\n".join(
         f"- {d['name']}({d['code']}): {d['current']:,}원 "
         f"| 등락 {d['change_pct']:+.2f}% | 거래량 {d['volume']:,} "
@@ -582,6 +671,9 @@ select_targets 도구를 호출해 결과를 반환하세요.
     result   = _extract_tool_result(msg)
     selected = result.get("selected", [])
     reason   = result.get("reason", "")
+
+    # 결과 캐시 저장
+    _save_stage2_cache(_STAGE2_CACHE, top_codes, selected, reason)
 
     print(f"[Brain] ── 2단계: 당일 모멘텀 스코어 + AI 필터 ──────")
     for d in scored:
@@ -824,6 +916,9 @@ def get_candidate_pool_us() -> list[str]:
 def get_targets_us(market_data: list[dict]) -> list[str]:
     """
     당일 모멘텀 팩터로 1차 순위 → Claude가 이상 징후 필터 (미국장 버전).
+
+    비용 절감: 상위 후보 티커 순서가 직전 호출과 동일하고 TTL 이내면
+    Claude 재호출 없이 이전 결과를 반환.
     """
     import factor as factor_engine
     buy_limit = settings.BRAIN_BUY_LIMIT_US
@@ -831,6 +926,23 @@ def get_targets_us(market_data: list[dict]) -> list[str]:
     # ── 당일 모멘텀 스코어링 ────────────────────────────────
     scored = factor_engine.score_intraday(market_data)
 
+    # 캐시 비교 기준: 상위 buy_limit*2 티커 순서
+    top_codes = [d["ticker"] for d in scored[: buy_limit * 2]]
+
+    # ── Stage2 캐시 히트 체크 ───────────────────────────────
+    hit, cached_selected, cached_reason = _stage2_cache_hit(_STAGE2_CACHE_US, top_codes)
+    if hit:
+        elapsed = (datetime.now() - datetime.fromisoformat(
+            _load_stage2_cache(_STAGE2_CACHE_US)["timestamp"]
+        )).total_seconds() / 60
+        print(
+            f"[Brain-US] Stage2 캐시 재사용 — 상위 풀 동일 "
+            f"({elapsed:.0f}분 경과 / TTL {_STAGE2_TTL_MIN}분)\n"
+            f"  → {cached_reason}\n"
+        )
+        return cached_selected
+
+    # ── Claude Stage2 호출 ──────────────────────────────────
     info = "\n".join(
         f"- {d['name']}({d['ticker']}): ${d['current']:.2f} "
         f"| 등락 {d['change_pct']:+.2f}% | 거래량 {d['volume']:,} "
@@ -863,6 +975,9 @@ select_targets 도구를 호출해 결과를 반환하세요.
     result   = _extract_tool_result(msg)
     selected = result.get("selected", [])
     reason   = result.get("reason", "")
+
+    # 결과 캐시 저장
+    _save_stage2_cache(_STAGE2_CACHE_US, top_codes, selected, reason)
 
     print(f"[Brain-US] ── 2단계: 당일 모멘텀 스코어 + AI 필터 ──")
     for d in scored:
