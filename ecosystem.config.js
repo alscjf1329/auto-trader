@@ -2,9 +2,10 @@ module.exports = {
   apps: [
     {
       name: "auto-trader-dashboard",
-      script: ".venv/bin/streamlit",
-      args: "run dashboard/app.py --server.port 8501 --server.headless true",
-      cwd: "/app/auto-trader",   // ← 실제 서버 경로로 변경
+      script: ".venv/bin/python",
+      args: "-m streamlit run dashboard/app.py --server.port 8501 --server.headless true",
+      interpreter: "none",
+      cwd: "/app/auto-trader",
 
       autorestart: true,
       watch: false,

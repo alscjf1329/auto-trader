@@ -239,7 +239,7 @@ def _fetch_research() -> str:
 
         # ── web_search 툴로 Claude가 직접 검색 ───────────────
         while True:
-            response = client.messages.create(
+            response = client.beta.messages.create(
                 model=settings.BRAIN_MODEL_STAGE1,
                 max_tokens=1024,
                 tools=[{"type": "web_search_20250305", "name": "web_search"}],
