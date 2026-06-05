@@ -14,6 +14,9 @@ telegram_cmd.py - 텔레그램 봇 명령어 핸들러
   /set buy_limit [n]      한국장 최대 매수 종목 수
   /set buy_limit_us [n]   미국장 최대 매수 종목 수
   /reset                  모든 설정 초기화 (settings.yaml 기본값으로)
+  /mode                   현재 모드 확인
+  /mode brain             Brain(AI) 모드로 전환
+  /mode strategy          Strategy(규칙) 모드로 전환
 """
 
 import os
@@ -62,6 +65,7 @@ def _save_state(state: dict):
 def _default_state() -> dict:
     return {
         "paused":          False,
+        "mode":            None,
         "stop_loss_pct":   None,
         "take_profit_pct": None,
         "buy_limit":       None,
@@ -122,6 +126,9 @@ def _cmd_help():
         "  /pause               신규 매수 중단\n"
         "  /resume              매수 재개\n"
         "\n<b>설정</b>\n"
+        "  /mode                현재 모드 확인\n"
+        "  /mode brain          Brain(AI) 모드 전환\n"
+        "  /mode strategy       Strategy(규칙) 모드 전환\n"
         "  /set stop_loss 5.0   손절 기준 (%)\n"
         "  /set take_profit 7.0 익절 기준 (%)\n"
         "  /set buy_limit 3     한국 최대 매수\n"
@@ -373,6 +380,38 @@ def _cmd_set(args: list):
         _send(f"⚠️ 값 형식 오류: <code>{val_str}</code>")
 
 
+def _cmd_mode(args: list):
+    import yaml
+    state = _load_state()
+
+    # 인수 없으면 현재 모드 조회
+    if not args:
+        try:
+            with open(_ROOT / "settings.yaml", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            default_mode = cfg["trading"]["mode"]
+        except Exception:
+            default_mode = "?"
+        override = state.get("mode")
+        if override:
+            _send(f"⚙️ 현재 모드: <b>{override}</b> <i>(봇 설정, 기본값: {default_mode})</i>")
+        else:
+            _send(f"⚙️ 현재 모드: <b>{default_mode}</b> <i>(settings.yaml 기본값)</i>")
+        return
+
+    new_mode = args[0].lower()
+    if new_mode not in ("brain", "strategy"):
+        _send("⚠️ 사용법: /mode brain  또는  /mode strategy")
+        return
+
+    state["mode"]       = new_mode
+    state["updated_at"] = datetime.now().isoformat()
+    _save_state(state)
+
+    icon = "🧠" if new_mode == "brain" else "📐"
+    _send(f"{icon} <b>모드 변경</b>  →  <b>{new_mode}</b>\n다음 사이클부터 적용됩니다.")
+
+
 def _cmd_reset():
     _save_state(_default_state())
     _send("🔄 <b>설정 초기화</b>\nsettings.yaml 기본값으로 복원됐습니다.")
@@ -388,6 +427,7 @@ def _cmd_state():
         trading = cfg.get("trading", {})
         brain   = cfg.get("brain", {})
         defaults = {
+            "mode":            trading.get("mode",             "brain"),
             "stop_loss_pct":   trading.get("stop_loss_pct",   -5.0),
             "take_profit_pct": risk.get("take_profit_pct",     7.0),
             "buy_limit":       brain.get("buy_limit",           3),
@@ -401,10 +441,14 @@ def _cmd_state():
         d = defaults.get(key, "?")
         return f"<b>{v}</b> <i>(기본 {d})</i>" if v is not None else f"{d} <i>(기본값)</i>"
 
+    mode_override = state.get("mode")
+    mode_str = f"<b>{mode_override}</b> <i>(봇 설정)</i>" if mode_override else f"{defaults.get('mode', '?')} <i>(기본값)</i>"
+
     lines = [
         "⚙️ <b>현재 설정</b>",
         _DIV,
         f"매수 상태     {'🚫 중단' if state.get('paused') else '✅ 정상'}",
+        f"모드          {mode_str}",
         f"손절 기준     {_val('stop_loss_pct')}%",
         f"익절 기준     {_val('take_profit_pct')}%",
         f"한국 매수한도  {_val('buy_limit')}개",
@@ -433,6 +477,7 @@ def _handle(text: str):
         "pnl":      lambda: _cmd_pnl(),
         "pause":    lambda: _cmd_pause(),
         "resume":   lambda: _cmd_resume(),
+        "mode":     lambda: _cmd_mode(args),
         "set":      lambda: _cmd_set(args),
         "reset":    lambda: _cmd_reset(),
         "state":    lambda: _cmd_state(),

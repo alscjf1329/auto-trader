@@ -593,7 +593,8 @@ def run():
         return   # 장 외 시간은 조용히 패스
 
     print(f"\n[{datetime.now().strftime('%H:%M')}] 한국장 체크")
-    if settings.MODE == "brain":
+    mode = _bot_state().get("mode") or settings.MODE
+    if mode == "brain":
         run_brain_mode()
     else:
         run_strategy_mode()
@@ -605,7 +606,8 @@ def run_us():
         return
 
     print(f"\n[{datetime.now().strftime('%H:%M')}] 미국장 체크")
-    if settings.MODE == "brain":
+    mode = _bot_state().get("mode") or settings.MODE
+    if mode == "brain":
         run_brain_mode_us()
     else:
         print("[US] strategy 모드는 미국장 세션 미지원.")
