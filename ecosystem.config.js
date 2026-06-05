@@ -22,5 +22,27 @@ module.exports = {
         PYTHONIOENCODING: "utf-8",
       },
     },
+    {
+      name: "auto-trader-bot",
+      script: ".venv/bin/python",
+      args: "telegram_cmd.py",
+      interpreter: "none",
+      cwd: "/app/auto-trader",
+
+      autorestart: true,
+      watch: false,
+      max_restarts: 10,
+      restart_delay: 5000,
+
+      out_file: "logs/bot_out.log",
+      error_file: "logs/bot_err.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
+      merge_logs: true,
+
+      env: {
+        PYTHONUNBUFFERED: "1",
+        PYTHONIOENCODING: "utf-8",
+      },
+    },
   ],
 };

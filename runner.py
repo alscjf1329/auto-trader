@@ -100,6 +100,17 @@ _check_live_safety()
 # 당일 손실 한도 체크 (7순위)
 # ══════════════════════════════════════════════════════════════
 
+def _bot_state() -> dict:
+    """bot_state.json 로드 — 텔레그램 명령어로 변경된 설정값"""
+    path = Path(__file__).parent / "logs" / "bot_state.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def _daily_loss_exceeded(market: str = "KR") -> bool:
     """
     오늘 실현 손실이 settings.SAFETY_DAILY_LOSS_LIMIT 초과 여부 확인.
@@ -281,8 +292,16 @@ def run_brain_mode():
     balance_list = kis_api.get_balance()
     balance = {b["pdno"]: b for b in balance_list}
 
+    # 텔레그램 봇 상태 로드
+    bot = _bot_state()
+
+    # 봇 명령어로 일시 중단된 경우
+    if bot.get("paused"):
+        print("[Brain] 텔레그램 봇 명령으로 매수 중단 중 (/resume 으로 재개)")
+        targets = []
+
     # bear 국면이면 신규 매수 전체 차단
-    if settings.REGIME_FILTER and not regime["is_bull"]:
+    if targets and settings.REGIME_FILTER and not regime["is_bull"]:
         print(f"[Brain] 하락장 국면 (KODEX200 < SMA200 {regime['gap_pct']:+.1f}%) — 신규 매수 차단")
         targets = []
 
@@ -437,8 +456,16 @@ def run_brain_mode_us():
     balance_us_list = kis_api.get_balance_us()
     balance_us = {b["pdno"]: b for b in balance_us_list}
 
+    # 텔레그램 봇 상태 로드
+    bot = _bot_state()
+
+    # 봇 명령어로 일시 중단된 경우
+    if bot.get("paused"):
+        print("[Brain-US] 텔레그램 봇 명령으로 매수 중단 중 (/resume 으로 재개)")
+        targets = []
+
     # bear 국면이면 신규 매수 차단
-    if settings.REGIME_FILTER and not regime_us["is_bull"]:
+    if targets and settings.REGIME_FILTER and not regime_us["is_bull"]:
         print(f"[Brain-US] 하락장 국면 (QQQ < SMA200 {regime_us['gap_pct']:+.1f}%) — 신규 매수 차단")
         targets = []
 

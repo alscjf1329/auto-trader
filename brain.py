@@ -30,6 +30,17 @@ import kis_api
 client = anthropic.Anthropic()
 
 _POOL_CACHE      = Path(__file__).parent / "logs" / "pool_cache.json"
+_BOT_STATE_PATH  = Path(__file__).parent / "logs" / "bot_state.json"
+
+
+def _load_bot_state() -> dict:
+    """telegram_cmd.py 가 저장한 설정 override 로드"""
+    if not _BOT_STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(_BOT_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 _STAGE2_CACHE    = Path(__file__).parent / "logs" / "stage2_cache.json"
 _STAGE2_CACHE_US = Path(__file__).parent / "logs" / "stage2_cache_us.json"
 _STAGE2_TTL_MIN  = 15  # 동일 풀이어도 N분 후 강제 재평가
@@ -617,7 +628,9 @@ def get_targets(market_data: list[dict]) -> list[str]:
     Claude 재호출 없이 이전 결과를 반환.
     """
     import factor as factor_engine
-    buy_limit = settings.BRAIN_BUY_LIMIT
+    # 텔레그램 봇 설정 override
+    _bot = _load_bot_state()
+    buy_limit = _bot.get("buy_limit") or settings.BRAIN_BUY_LIMIT
 
     # ── 당일 모멘텀 스코어링 ────────────────────────────────
     scored = factor_engine.score_intraday(market_data)
@@ -697,9 +710,14 @@ def should_sell(data: dict, holding: dict) -> bool:
     avg_price  = float(holding.get("pchs_avg_pric", 0))
     qty        = int(holding.get("hldg_qty", 0))
 
+    # 텔레그램 봇 설정 override (익절/손절 기준)
+    _bot           = _load_bot_state()
+    take_profit    = _bot.get("take_profit_pct") or settings.RISK_TAKE_PROFIT_PCT
+    stop_loss      = _bot.get("stop_loss_pct")   or settings.STOP_LOSS_PCT
+
     # ── 규칙 기반: 익절 ────────────────────────────────────
-    if profit_pct >= settings.RISK_TAKE_PROFIT_PCT:
-        print(f"  [익절] {data['code']} {profit_pct:+.2f}% >= {settings.RISK_TAKE_PROFIT_PCT}% → 즉시 매도")
+    if profit_pct >= take_profit:
+        print(f"  [익절] {data['code']} {profit_pct:+.2f}% >= {take_profit}% → 즉시 매도")
         return True
 
     # ── Claude: 정성 판단 (애매한 구간만) ─────────────────
@@ -708,7 +726,7 @@ def should_sell(data: dict, holding: dict) -> bool:
 평가손익: {profit_pct:+.2f}% | 전일대비: {data['change_pct']:+.2f}%
 52주 최고: {data['high_52w']:,}원 / 최저: {data['low_52w']:,}원
 
-익절({settings.RISK_TAKE_PROFIT_PCT}%) 미달, 손절(-{abs(settings.STOP_LOSS_PCT)}%) 미달 구간.
+익절({take_profit}%) 미달, 손절(-{abs(stop_loss)}%) 미달 구간.
 추세가 꺾였거나 보유 가치가 없으면 매도(sell=true), 유지할만하면 매도하지 마세요(sell=false).
 sell_decision 도구를 호출해 판단 결과를 반환하세요."""
 
@@ -921,7 +939,8 @@ def get_targets_us(market_data: list[dict]) -> list[str]:
     Claude 재호출 없이 이전 결과를 반환.
     """
     import factor as factor_engine
-    buy_limit = settings.BRAIN_BUY_LIMIT_US
+    _bot = _load_bot_state()
+    buy_limit = _bot.get("buy_limit_us") or settings.BRAIN_BUY_LIMIT_US
 
     # ── 당일 모멘텀 스코어링 ────────────────────────────────
     scored = factor_engine.score_intraday(market_data)
