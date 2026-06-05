@@ -1,21 +1,93 @@
+import json
 import requests
+from datetime import datetime
+from pathlib import Path
+
 import config
 
 BASE_URL = "https://openapivts.koreainvestment.com:29443" if config.IS_PAPER else "https://openapi.koreainvestment.com:9443"
 _access_token = None
 
+# 토큰 캐시 파일 (하루 1회 발급 제한 대응)
+_TOKEN_CACHE = Path(__file__).parent / "logs" / ".kis_token_cache.json"
+
+
+def _load_cached_token() -> str | None:
+    """캐시 파일에서 유효한 토큰 로드"""
+    if not _TOKEN_CACHE.exists():
+        return None
+    try:
+        data    = json.loads(_TOKEN_CACHE.read_text(encoding="utf-8"))
+        token   = data.get("access_token", "")
+        expires = data.get("expires_at", "")
+        if not token or not expires:
+            return None
+        # 만료 1시간 전까지 재사용
+        exp_dt = datetime.strptime(expires, "%Y-%m-%d %H:%M:%S")
+        if datetime.now() < exp_dt:
+            print(f"[KIS] 캐시 토큰 사용 (만료: {expires})")
+            return token
+    except Exception:
+        pass
+    return None
+
+
+def _save_token_cache(token: str, expires_at: str):
+    _TOKEN_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    _TOKEN_CACHE.write_text(
+        json.dumps({"access_token": token, "expires_at": expires_at},
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+
 
 def get_access_token():
-    """액세스 토큰 발급"""
+    """액세스 토큰 발급 (캐시 우선, 만료 시 재발급)"""
     global _access_token
-    url = f"{BASE_URL}/oauth2/tokenP"
+
+    # 1. 메모리 캐시
+    if _access_token:
+        return _access_token
+
+    # 2. 파일 캐시
+    cached = _load_cached_token()
+    if cached:
+        _access_token = cached
+        return _access_token
+
+    # 3. 신규 발급
+    url  = f"{BASE_URL}/oauth2/tokenP"
     body = {
         "grant_type": "client_credentials",
-        "appkey": config.APP_KEY,
-        "appsecret": config.APP_SECRET,
+        "appkey":     config.APP_KEY,
+        "appsecret":  config.APP_SECRET,
     }
-    res = requests.post(url, json=body)
-    _access_token = res.json()["access_token"]
+    res  = requests.post(url, json=body)
+    data = res.json()
+
+    if "access_token" not in data:
+        # 이미 유효한 토큰이 있는 경우 만료 시각만 반환되기도 함
+        expires = data.get("access_token_token_expired", "")
+        if expires and _TOKEN_CACHE.exists():
+            # 기존 캐시 토큰 강제 사용
+            try:
+                cached_data = json.loads(_TOKEN_CACHE.read_text(encoding="utf-8"))
+                token = cached_data.get("access_token", "")
+                if token:
+                    print(f"[KIS] 기존 토큰 재사용 (만료: {expires})")
+                    _access_token = token
+                    return _access_token
+            except Exception:
+                pass
+        msg = data.get("msg1") or data.get("message") or str(data)
+        raise ValueError(f"KIS 토큰 발급 실패: {msg}")
+
+    _access_token = data["access_token"]
+    expires_at    = data.get("access_token_token_expired", "")
+    if expires_at:
+        _save_token_cache(_access_token, expires_at)
+        print(f"[KIS] 신규 토큰 발급 (만료: {expires_at})")
+
     return _access_token
 
 
@@ -38,6 +110,9 @@ def get_stock_data(code: str) -> dict:
     headers = get_headers("FHKST01010100")
     params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}
     res = requests.get(url, headers=headers, params=params).json()
+    if "output" not in res:
+        msg = res.get("msg1") or res.get("message") or str(res)
+        raise ValueError(f"KIS API 오류 [{code}]: {msg}")
     output = res["output"]
     return {
         "code": code,
