@@ -571,9 +571,17 @@ def run_daily_summary():
 
     # ── 텔레그램 일일 요약 ────────────────────────────────────
     if settings.TELEGRAM_DAILY_SUMMARY:
-        notify.daily_summary(portfolio_value=pv_kr, market="KR")
+        notify.daily_summary(
+            portfolio_value=pv_kr,
+            holdings=kr_balance,
+            market="KR",
+        )
         if settings.MODE == "brain":
-            notify.daily_summary(portfolio_value=pv_us, market="US")
+            notify.daily_summary(
+                portfolio_value=pv_us,
+                holdings=us_balance,
+                market="US",
+            )
 
 
 # ── 스케줄 등록 ───────────────────────────────────────────

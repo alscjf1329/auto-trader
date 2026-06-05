@@ -39,6 +39,25 @@ def _ensure_dirs():
     TRADES_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _find_buy_date(code: str) -> str:
+    """최근 30일 거래 이력에서 해당 종목의 가장 최근 매수일 조회"""
+    from datetime import date, timedelta
+    today = date.today()
+    for delta in range(30):
+        d = today - timedelta(days=delta)
+        path = TRADES_DIR / f"{d.isoformat()}.json"
+        if not path.exists():
+            continue
+        try:
+            trades = json.loads(path.read_text(encoding="utf-8"))
+            for t in reversed(trades):
+                if t.get("code") == code and t.get("action") == "BUY":
+                    return t.get("date", "")
+        except Exception:
+            continue
+    return ""
+
+
 def _ensure_csv_header():
     """CSV 파일이 없으면 헤더 생성"""
     if not CSV_PATH.exists():
@@ -122,6 +141,7 @@ def log_trade(
                 profit_pct=profit_pct,
                 profit_amount=float(profit_amount) if profit_amount else 0.0,
                 reason=reason,
+                buy_date=_find_buy_date(code),
             )
     except Exception as _ne:
         print(f"[Journal] 텔레그램 알림 실패: {_ne}")
