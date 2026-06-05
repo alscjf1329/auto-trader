@@ -697,6 +697,7 @@ elif page == "📜 로그 & 캐시":
         log_lines = load_runner_log(n_lines)
         if filter_kw:
             log_lines = [l for l in log_lines if filter_kw.lower() in l.lower()]
+        log_lines = list(reversed(log_lines))  # 최신 로그 최상위
 
         # 색상 코딩
         def colorize(line: str) -> str:
