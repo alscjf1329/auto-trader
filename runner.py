@@ -159,6 +159,19 @@ def _create_strategy():
 strategy = _create_strategy()
 
 
+# ── API 에러 공통 처리 ────────────────────────────────────
+def _handle_api_error(where: str, e: Exception):
+    """Anthropic API 에러 처리 — 크레딧 소진은 별도 알림"""
+    err_msg = str(e)
+    if "credit balance is too low" in err_msg or "credits" in err_msg.lower():
+        msg = "Anthropic API 크레딧이 소진됐습니다.\nhttps://console.anthropic.com → Billing → Add Credits"
+        print(f"[API] 크레딧 소진 — 매매 중단")
+        notify.send(f"💳 <b>API 크레딧 소진</b>\n{msg}")
+    else:
+        notify.alert_error(where, e)
+    print(f"[{where}] 오류: {e}")
+
+
 # ── Brain 모드 ────────────────────────────────────────────
 def run_brain_mode():
     import brain
@@ -166,19 +179,25 @@ def run_brain_mode():
     print("\n===== [Brain] Claude AI 매매 =====")
 
     # ── Stage 1: AI가 유니버스에서 후보 풀 선정 (캐시 활용) ──
-    pool_codes = brain.get_candidate_pool()
+    try:
+        pool_codes = brain.get_candidate_pool()
+    except Exception as e:
+        _handle_api_error("[Brain] Stage1 풀 선정", e)
+        return
     if not pool_codes:
-        print("[Brain] 후보 풀이 비어 있습니다. 종료.")
+        msg = "Stage1 후보 풀이 비어있습니다. AI 응답 이상 또는 유니버스 데이터 오류."
+        print(f"[Brain] {msg}")
+        notify.alert_error("[Brain] 후보 풀 비어있음", msg)
         return
 
     # ── Stage 2: 후보 풀 실시간 데이터 수집 (KIS) ───────────
     universe_cache = brain.get_universe_cache()   # ATR / 52w 캐시
     market_data = []
+    fail_count = 0
     for code in pool_codes:
         try:
             data = kis_api.get_stock_data(code)
             data["name"] = settings.UNIVERSE_MAP.get(code, code)
-            # yfinance ATR / 52w 데이터 병합 (포지션 사이징 정확도 향상)
             cached = universe_cache.get(code, {})
             data.setdefault("atr",      cached.get("atr", 0))
             data.setdefault("high_52w", cached.get("high_52w", data.get("high_52w", 0)))
@@ -186,18 +205,26 @@ def run_brain_mode():
             market_data.append(data)
         except Exception as e:
             print(f"  [{code}] 데이터 수집 실패: {e}")
-            notify.alert_error(f"[Brain] 데이터 수집 {code}", e)
+            fail_count += 1
 
     if not market_data:
-        print("[Brain] 시장 데이터를 가져올 수 없습니다. 종료.")
+        msg = f"KIS 시세 조회 전체 실패 ({fail_count}종목)"
+        print(f"[Brain] {msg}")
+        notify.alert_error("[Brain] 시장 데이터 전체 실패", msg)
         return
+    elif fail_count > len(pool_codes) // 2:
+        notify.alert_error("[Brain] 시세 조회 다수 실패", f"{fail_count}/{len(pool_codes)}종목 실패")
 
     # ── 시장 국면 체크 (SMA200) ─────────────────────────────
     regime = brain.get_market_regime()
     notify.alert_regime(regime["is_bull"], regime.get("gap_pct", 0), market="KR")
 
     # ── Stage 3: AI가 후보 풀에서 최종 매수 종목 선정 ────────
-    targets = brain.get_targets(market_data)
+    try:
+        targets = brain.get_targets(market_data)
+    except Exception as e:
+        _handle_api_error("[Brain] Stage2 매수 선정", e)
+        targets = []
 
     # ── 포트폴리오 가치 계산 ─────────────────────────────────
     balance_list = kis_api.get_balance()
@@ -312,13 +339,20 @@ def run_brain_mode_us():
     print("\n===== [Brain-US] Claude AI 미국주식 매매 =====")
 
     # Stage 1: AI가 미국 유니버스에서 후보 풀 선정
-    pool_tickers = brain.get_candidate_pool_us()
+    try:
+        pool_tickers = brain.get_candidate_pool_us()
+    except Exception as e:
+        _handle_api_error("[Brain-US] Stage1 풀 선정", e)
+        return
     if not pool_tickers:
-        print("[Brain-US] 후보 풀이 비어 있습니다. 종료.")
+        msg = "Stage1 후보 풀이 비어있습니다. AI 응답 이상 또는 유니버스 데이터 오류."
+        print(f"[Brain-US] {msg}")
+        notify.alert_error("[Brain-US] 후보 풀 비어있음", msg)
         return
 
     # Stage 2: KIS 해외 실시간 데이터 수집
     market_data = []
+    fail_count = 0
     for ticker in pool_tickers:
         try:
             exchange = settings.UNIVERSE_US_EXCH.get(ticker, "NAS")
@@ -327,17 +361,26 @@ def run_brain_mode_us():
             market_data.append(data)
         except Exception as e:
             print(f"  [{ticker}] 데이터 수집 실패: {e}")
+            fail_count += 1
 
     if not market_data:
-        print("[Brain-US] 시장 데이터를 가져올 수 없습니다. 종료.")
+        msg = f"KIS 해외 시세 조회 전체 실패 ({fail_count}종목)"
+        print(f"[Brain-US] {msg}")
+        notify.alert_error("[Brain-US] 시장 데이터 전체 실패", msg)
         return
+    elif fail_count > len(pool_tickers) // 2:
+        notify.alert_error("[Brain-US] 시세 조회 다수 실패", f"{fail_count}/{len(pool_tickers)}종목 실패")
 
     # 미국장 국면 체크 (QQQ SMA200)
     regime_us = brain.get_market_regime_us()
     notify.alert_regime(regime_us["is_bull"], regime_us.get("gap_pct", 0), market="US")
 
     # Stage 3: AI가 최종 매수 종목 선정
-    targets = brain.get_targets_us(market_data)
+    try:
+        targets = brain.get_targets_us(market_data)
+    except Exception as e:
+        _handle_api_error("[Brain-US] Stage2 매수 선정", e)
+        targets = []
 
     # 포트폴리오 가치 계산 (USD)
     balance_us_list = kis_api.get_balance_us()
@@ -551,14 +594,16 @@ def run_daily_summary():
     try:
         kr_balance = kis_api.get_balance()
         pv_kr = sum(float(b.get("evlu_amt", 0)) for b in kr_balance)
-    except Exception:
+    except Exception as e:
+        notify.alert_error("[Daily] 한국 잔고 조회 실패", e)
         pv_kr = 0.0
 
     if settings.MODE == "brain":
         try:
             us_balance = kis_api.get_balance_us()
             pv_us  = sum(float(b.get("evlu_amt", 0)) for b in us_balance)
-        except Exception:
+        except Exception as e:
+            notify.alert_error("[Daily] 미국 잔고 조회 실패", e)
             pv_us = 0.0
     else:
         pv_us = 0.0
