@@ -42,8 +42,8 @@ def get_stock_data(code: str) -> dict:
     return {
         "code": code,
         "current": int(output["stck_prpr"]),       # 현재가
-        "high_52w": int(output["d52_lwpr"]),        # 52주 최고가
-        "low_52w": int(output["d52_hgpr"]),         # 52주 최저가
+        "high_52w": int(output.get("d52_hgpr", 0)),   # 52주 최고가
+        "low_52w":  int(output.get("d52_lwpr", 0)), # 52주 최저가
         "open": int(output["stck_oprc"]),           # 시가
         "volume": int(output["acml_vol"]),          # 거래량
         "change_pct": float(output["prdy_ctrt"]),   # 전일 대비 등락률
