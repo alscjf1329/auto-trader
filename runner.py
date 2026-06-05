@@ -587,12 +587,12 @@ def _in_market_hours(open_str: str, close_str: str) -> bool:
 
 
 # ── 메인 실행 함수 ────────────────────────────────────────
-def run():
-    """한국장 배치 실행 — 장 시간 내에만 동작"""
-    if not _in_market_hours(settings.MARKET_OPEN, settings.MARKET_CLOSE):
-        return   # 장 외 시간은 조용히 패스
+def run(force: bool = False):
+    """한국장 배치 실행 — 장 시간 내에만 동작 (force=True 시 시간 무시)"""
+    if not force and not _in_market_hours(settings.MARKET_OPEN, settings.MARKET_CLOSE):
+        return
 
-    print(f"\n[{datetime.now().strftime('%H:%M')}] 한국장 체크")
+    print(f"\n[{datetime.now().strftime('%H:%M')}] 한국장 체크{'(강제)' if force else ''}")
     mode = _bot_state().get("mode") or settings.MODE
     if mode == "brain":
         run_brain_mode()
@@ -600,12 +600,12 @@ def run():
         run_strategy_mode()
 
 
-def run_us():
-    """미국장 배치 실행 — 장 시간 내에만 동작"""
-    if not _in_market_hours(settings.MARKET_OPEN_US, settings.MARKET_CLOSE_US):
+def run_us(force: bool = False):
+    """미국장 배치 실행 — 장 시간 내에만 동작 (force=True 시 시간 무시)"""
+    if not force and not _in_market_hours(settings.MARKET_OPEN_US, settings.MARKET_CLOSE_US):
         return
 
-    print(f"\n[{datetime.now().strftime('%H:%M')}] 미국장 체크")
+    print(f"\n[{datetime.now().strftime('%H:%M')}] 미국장 체크{'(강제)' if force else ''}")
     mode = _bot_state().get("mode") or settings.MODE
     if mode == "brain":
         run_brain_mode_us()
