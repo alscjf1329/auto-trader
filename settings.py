@@ -214,11 +214,38 @@ def reload():
 
 
 def _print_summary():
-    if MODE == "brain":
-        print(f"[Settings] 모드: brain")
-        print(f"  한국장: 유니버스 {len(UNIVERSE)}종목 → 풀 {BRAIN_POOL_SIZE}개 → 매수 {BRAIN_BUY_LIMIT}개 | {SCHEDULE_TIME} KST")
-        print(f"  미국장: 유니버스 {len(UNIVERSE_US)}종목 → 풀 {BRAIN_POOL_SIZE_US}개 → 매수 {BRAIN_BUY_LIMIT_US}개 | {SCHEDULE_TIME_US} KST")
+    # bot_state.json override 반영
+    _bot: dict = {}
+    try:
+        import json as _json
+        _bot_path = Path(__file__).parent / "logs" / "bot_state.json"
+        if _bot_path.exists():
+            _bot = _json.loads(_bot_path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+    _mode        = _bot.get("mode") or MODE
+    _buy_limit   = _bot.get("buy_limit") or BRAIN_BUY_LIMIT
+    _buy_limit_us= _bot.get("buy_limit_us") or BRAIN_BUY_LIMIT_US
+    _tp          = _bot.get("take_profit_pct") or RISK_TAKE_PROFIT_PCT
+    _sl          = _bot.get("stop_loss_pct") or STOP_LOSS_PCT
+    _paused      = _bot.get("paused", False)
+
+    def _ovr(yaml_val, bot_val, key):
+        """bot override 시 * 표시"""
+        return f"{bot_val}*" if _bot.get(key) is not None else str(yaml_val)
+
+    pause_tag = "  🚫 매수중단" if _paused else ""
+
+    if _mode == "brain":
+        print(f"[Settings] 모드: brain{pause_tag}")
+        print(f"  한국장: 유니버스 {len(UNIVERSE)}종목 → 풀 {BRAIN_POOL_SIZE}개 → 매수 {_ovr(BRAIN_BUY_LIMIT, _buy_limit, 'buy_limit')}개 | {SCHEDULE_TIME} KST")
+        print(f"  미국장: 유니버스 {len(UNIVERSE_US)}종목 → 풀 {BRAIN_POOL_SIZE_US}개 → 매수 {_ovr(BRAIN_BUY_LIMIT_US, _buy_limit_us, 'buy_limit_us')}개 | {SCHEDULE_TIME_US} KST")
+        print(f"  익절 {_ovr(RISK_TAKE_PROFIT_PCT, _tp, 'take_profit_pct')}% | 손절 {_ovr(STOP_LOSS_PCT, _sl, 'stop_loss_pct')}%")
     else:
-        print(f"[Settings] 모드: strategy({STRATEGY_NAME}) | 종목 {len(STOCKS)}개 | {SCHEDULE_TIME}")
+        print(f"[Settings] 모드: strategy({STRATEGY_NAME}) | 종목 {len(STOCKS)}개 | {SCHEDULE_TIME}{pause_tag}")
+
+    if _bot.get("mode"):
+        print(f"  (* bot override 적용 중 — /reset 으로 초기화)")
 
 _print_summary()
