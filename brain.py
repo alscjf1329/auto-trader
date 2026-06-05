@@ -239,12 +239,12 @@ def _fetch_research() -> str:
 
         # ── web_search 툴로 Claude가 직접 검색 ───────────────
         while True:
-            response = client.beta.messages.create(
+            response = client.messages.create(
                 model=settings.BRAIN_MODEL_STAGE1,
                 max_tokens=1024,
                 tools=[{"type": "web_search_20250305", "name": "web_search"}],
                 messages=messages,
-                betas=["web-search-2025-03-05"],
+                extra_headers={"anthropic-beta": "web-search-2025-03-05"},
             )
 
             if response.stop_reason == "end_turn":

@@ -584,38 +584,31 @@ def run_daily_summary():
             )
 
 
-# ── 스케줄 등록 ───────────────────────────────────────────
-# 한국장: N분마다 실행 (장 시간 체크는 run() 내부에서)
-schedule.every(settings.INTERVAL_MINUTES).minutes.do(run)
+# ── 직접 실행 시에만 (batchron import 시 실행 안 됨) ─────────
+if __name__ == "__main__":
+    # 스케줄 등록
+    schedule.every(settings.INTERVAL_MINUTES).minutes.do(run)
+    if settings.MODE == "brain":
+        schedule.every(settings.INTERVAL_MINUTES_US).minutes.do(run_us)
+    schedule.every().day.at(settings.TELEGRAM_SUMMARY_TIME).do(run_daily_summary)
 
-# 미국장: N분마다 실행
-if settings.MODE == "brain":
-    schedule.every(settings.INTERVAL_MINUTES_US).minutes.do(run_us)
+    mode_label = (
+        "Claude AI Brain" if settings.MODE == "brain"
+        else f"{strategy.__class__.__name__}"
+    )
+    print(f"모드: {mode_label}")
+    print(f"  한국장: {settings.MARKET_OPEN}~{settings.MARKET_CLOSE} KST | {settings.INTERVAL_MINUTES}분 간격")
+    if settings.MODE == "brain":
+        print(f"  미국장: {settings.MARKET_OPEN_US}~{settings.MARKET_CLOSE_US} KST | {settings.INTERVAL_MINUTES_US}분 간격")
+    print(f"  일일요약: {settings.TELEGRAM_SUMMARY_TIME} KST")
+    print()
 
-# 일일 요약: settings.yaml의 daily_summary_time 시각에 실행
-schedule.every().day.at(settings.TELEGRAM_SUMMARY_TIME).do(run_daily_summary)
+    notify.alert_startup(
+        mode=mode_label,
+        market_open=settings.MARKET_OPEN,
+        interval=settings.INTERVAL_MINUTES,
+    )
 
-mode_label = (
-    "Claude AI Brain" if settings.MODE == "brain"
-    else f"{strategy.__class__.__name__}"
-)
-print(f"모드: {mode_label}")
-print(f"  한국장: {settings.MARKET_OPEN}~{settings.MARKET_CLOSE} KST | {settings.INTERVAL_MINUTES}분 간격")
-if settings.MODE == "brain":
-    print(f"  미국장: {settings.MARKET_OPEN_US}~{settings.MARKET_CLOSE_US} KST | {settings.INTERVAL_MINUTES_US}분 간격")
-print(f"  일일요약: {settings.TELEGRAM_SUMMARY_TIME} KST")
-print()
-
-# ── 텔레그램 시작 알림 ────────────────────────────────────
-notify.alert_startup(
-    mode=mode_label,
-    market_open=settings.MARKET_OPEN,
-    interval=settings.INTERVAL_MINUTES,
-)
-
-# 테스트용 즉시 실행 (주석 해제)
-# run()
-
-while True:
-    schedule.run_pending()
-    time.sleep(30)   # 30초마다 스케줄 체크
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
