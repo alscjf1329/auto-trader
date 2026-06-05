@@ -563,6 +563,90 @@ def run_strategy_mode():
     print(f"===== [{name}] 완료 =====\n")
 
 
+# ── Strategy 모드 (미국장) ────────────────────────────────
+def run_strategy_mode_us():
+    """미국장 규칙 기반 전략 실행"""
+    import importlib
+
+    strategy_name = settings.STRATEGY_US_NAME
+    print(f"\n===== [US-Strategy:{strategy_name}] 미국주식 매매 =====")
+
+    if not settings.STOCK_US_CODES:
+        print("[US-Strategy] stocks_us가 비어있습니다. settings.yaml에 종목을 추가하세요.")
+        return
+
+    # 전략 동적 로드
+    try:
+        mod_map = {
+            "regime_adaptive_us": ("strategies.regime_adaptive_us", "RegimeAdaptiveStrategyUS"),
+            "momentum_us":        ("strategies.momentum_us",        "MomentumStrategyUS"),
+        }
+        if strategy_name not in mod_map:
+            print(f"[US-Strategy] 알 수 없는 전략: {strategy_name}")
+            notify.alert_error("[US-Strategy]", f"알 수 없는 전략: {strategy_name}")
+            return
+        mod_path, cls_name = mod_map[strategy_name]
+        mod      = importlib.import_module(mod_path)
+        strategy_us = getattr(mod, cls_name)()
+    except Exception as e:
+        notify.alert_error("[US-Strategy] 전략 로드 실패", e)
+        return
+
+    targets    = strategy_us.get_targets()
+    balance_list = kis_api.get_balance_us()
+    balance    = {b["pdno"]: b for b in balance_list}
+    print(f"감시 {len(targets)}종목 | 보유 {len(balance)}종목\n")
+
+    for ticker in targets:
+        try:
+            exchange  = settings.STOCK_US_EXCH.get(ticker, "NAS")
+            data      = kis_api.get_stock_data_us(ticker, exchange)
+            data["ticker"] = ticker
+            data["name"]   = settings.STOCK_US_MAP.get(ticker, ticker)
+            holding   = balance.get(ticker)
+            avg_price = float(holding.get("pchs_avg_pric", 0)) if holding else 0
+            profit_pct = (data["current"] - avg_price) / avg_price * 100 if avg_price else 0
+            status    = f"보유 {profit_pct:+.2f}%" if holding else "미보유"
+
+            print(f"[{ticker}] {data['name']} | ${data['current']:.2f} "
+                  f"| {data.get('change_pct', 0):+.2f}% | {status}")
+
+            if holding:
+                if strategy_us.should_sell(data, holding):
+                    qty = int(holding["hldg_qty"])
+                    print(f"  → 매도 {qty}주")
+                    kis_api.sell_us(ticker, exchange, qty)
+                    logger.log_trade(
+                        "SELL", code=ticker, name=data["name"],
+                        price=data["current"], qty=qty, mode=f"strategy_us_{strategy_name}",
+                        reason="US 전략 매도 조건 충족",
+                        avg_buy_price=avg_price, profit_pct=profit_pct,
+                    )
+                else:
+                    print(f"  → 유지")
+            else:
+                if strategy_us.should_buy(data):
+                    qty_est = int(settings.MAX_BUY_AMOUNT_USD / data["current"])
+                    if qty_est < 1:
+                        print(f"  → 매수 수량 부족 (${data['current']:.2f} > ${settings.MAX_BUY_AMOUNT_USD})")
+                        continue
+                    print(f"  → 매수 {qty_est}주")
+                    kis_api.buy_us(ticker, exchange, settings.MAX_BUY_AMOUNT_USD)
+                    logger.log_trade(
+                        "BUY", code=ticker, name=data["name"],
+                        price=data["current"], qty=qty_est, mode=f"strategy_us_{strategy_name}",
+                        reason="US 전략 매수 조건 충족",
+                    )
+                else:
+                    print(f"  → 패스")
+
+        except Exception as e:
+            print(f"  [{ticker}] 오류: {e}")
+            notify.alert_error(f"[US-Strategy:{strategy_name}] {ticker}", e)
+
+    print(f"===== [US-Strategy:{strategy_name}] 완료 =====\n")
+
+
 # ── 거래 시간 체크 ────────────────────────────────────────
 def _in_market_hours(open_str: str, close_str: str) -> bool:
     """현재 시각이 장 시간 내인지 확인 (자정 넘기는 미국장 대응)"""
@@ -611,7 +695,7 @@ def run_us(force: bool = False):
     if mode == "brain":
         run_brain_mode_us()
     else:
-        print("[US] strategy 모드는 미국장 세션 미지원.")
+        run_strategy_mode_us()
 
 
 # ── 일일 요약 함수 ────────────────────────────────────────

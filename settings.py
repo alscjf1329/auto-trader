@@ -37,7 +37,8 @@ SCHEDULE_TIME    : str = MARKET_OPEN
 SCHEDULE_TIME_US : str = MARKET_OPEN_US
 
 # ── 전략 ───────────────────────────────────────────────────
-STRATEGY_NAME  : str = _cfg["strategy"]["name"]
+STRATEGY_NAME    : str = _cfg["strategy"]["name"]
+STRATEGY_US_NAME : str = _cfg.get("strategy_us", {}).get("name", "regime_adaptive_us")
 
 # ── Brain 설정 ─────────────────────────────────────────────
 _brain              = _cfg.get("brain", {})
@@ -50,11 +51,17 @@ BRAIN_MODEL_STAGE1  : str = _brain.get("model_stage1", "claude-opus-4-7")
 BRAIN_MODEL_STAGE2  : str = _brain.get("model_stage2", "claude-sonnet-4-6")
 BRAIN_MODEL_STAGE3  : str = _brain.get("model_stage3", "claude-haiku-4-5")
 
-# ── Strategy 모드 종목 ─────────────────────────────────────
+# ── Strategy 모드 종목 (한국) ──────────────────────────────
 STOCKS      : list = _cfg.get("stocks", [])
 STOCK_CODES : list = [s["code"] for s in STOCKS]
 STOCK_MAP   : dict = {s["code"]: s["name"] for s in STOCKS}
 YF_MAP      : dict = {s["code"]: f"{s['code']}.KS" for s in STOCKS}
+
+# ── Strategy 모드 종목 (미국) ──────────────────────────────
+STOCKS_US      : list = _cfg.get("stocks_us", [])
+STOCK_US_CODES : list = [s["ticker"] for s in STOCKS_US]
+STOCK_US_MAP   : dict = {s["ticker"]: s["name"] for s in STOCKS_US}
+STOCK_US_EXCH  : dict = {s["ticker"]: s["exchange"] for s in STOCKS_US}
 
 # ── Brain 모드 한국 유니버스 ───────────────────────────────
 UNIVERSE      : list = _cfg.get("universe", [])
@@ -127,6 +134,8 @@ def reload():
     global BRAIN_POOL_SIZE, BRAIN_POOL_SIZE_US, BRAIN_BUY_LIMIT, BRAIN_BUY_LIMIT_US, BRAIN_REFRESH
     global BRAIN_MODEL_STAGE1, BRAIN_MODEL_STAGE2, BRAIN_MODEL_STAGE3
     global STOCKS, STOCK_CODES, STOCK_MAP, YF_MAP
+    global STOCKS_US, STOCK_US_CODES, STOCK_US_MAP, STOCK_US_EXCH
+    global STRATEGY_US_NAME
     global UNIVERSE, UNIVERSE_CODES, UNIVERSE_MAP, UNIVERSE_YF
     global UNIVERSE_US, UNIVERSE_US_TICKERS, UNIVERSE_US_MAP, UNIVERSE_US_EXCH
     global _all_params
@@ -156,6 +165,7 @@ def reload():
     SCHEDULE_TIME       = MARKET_OPEN
     SCHEDULE_TIME_US    = MARKET_OPEN_US
     STRATEGY_NAME       = _cfg["strategy"]["name"]
+    STRATEGY_US_NAME    = _cfg.get("strategy_us", {}).get("name", "regime_adaptive_us")
     _b                  = _cfg.get("brain", {})
     BRAIN_POOL_SIZE     = int(_b.get("pool_size",    15))
     BRAIN_POOL_SIZE_US  = int(_b.get("pool_size_us",  8))
@@ -169,6 +179,10 @@ def reload():
     STOCK_CODES         = [s["code"] for s in STOCKS]
     STOCK_MAP           = {s["code"]: s["name"] for s in STOCKS}
     YF_MAP              = {s["code"]: f"{s['code']}.KS" for s in STOCKS}
+    STOCKS_US           = _cfg.get("stocks_us", [])
+    STOCK_US_CODES      = [s["ticker"] for s in STOCKS_US]
+    STOCK_US_MAP        = {s["ticker"]: s["name"] for s in STOCKS_US}
+    STOCK_US_EXCH       = {s["ticker"]: s["exchange"] for s in STOCKS_US}
     UNIVERSE            = _cfg.get("universe", [])
     UNIVERSE_CODES      = [s["code"] for s in UNIVERSE]
     UNIVERSE_MAP        = {s["code"]: s["name"] for s in UNIVERSE}

@@ -138,9 +138,15 @@ safety:
 # 전략 설정 (mode: strategy 일 때)
 # ─────────────────────────────────────────
 strategy:
+  # 한국장 전략
   # regime_adaptive / golden_cross / macd / bollinger
   # momentum / dual_momentum / rsi / turtle / volatility_breakout
   name: regime_adaptive
+
+strategy_us:
+  # 미국장 전략
+  # regime_adaptive_us / momentum_us
+  name: regime_adaptive_us
 
 
 # ─────────────────────────────────────────
@@ -155,6 +161,29 @@ stocks:
   - { code: "105560", name: "KB금융" }
   - { code: "005490", name: "POSCO홀딩스" }
   - { code: "035720", name: "카카오" }
+
+
+# ─────────────────────────────────────────
+# Strategy 모드 미국 종목 (mode: strategy + 미국장)
+# ─────────────────────────────────────────
+stocks_us:
+  # 빅테크
+  - { ticker: "AAPL",  name: "Apple",       exchange: "NAS" }
+  - { ticker: "MSFT",  name: "Microsoft",   exchange: "NAS" }
+  - { ticker: "GOOGL", name: "Alphabet",    exchange: "NAS" }
+  - { ticker: "META",  name: "Meta",        exchange: "NAS" }
+  - { ticker: "AMZN",  name: "Amazon",      exchange: "NAS" }
+  # 반도체
+  - { ticker: "NVDA",  name: "NVIDIA",      exchange: "NAS" }
+  - { ticker: "AMD",   name: "AMD",         exchange: "NAS" }
+  - { ticker: "AVGO",  name: "Broadcom",    exchange: "NAS" }
+  - { ticker: "QCOM",  name: "Qualcomm",    exchange: "NAS" }
+  # 금융
+  - { ticker: "JPM",   name: "JPMorgan",    exchange: "NYS" }
+  - { ticker: "V",     name: "Visa",        exchange: "NYS" }
+  # ETF
+  - { ticker: "QQQ",   name: "나스닥100ETF", exchange: "NAS" }
+  - { ticker: "SPY",   name: "S&P500ETF",   exchange: "NYS" }
 
 
 # ─────────────────────────────────────────
@@ -328,3 +357,17 @@ params:
 
   volatility_breakout:
     k: 0.5
+
+  # ── 미국장 전략 파라미터 ──────────────────
+  regime_adaptive_us:
+    atr_window: 14
+    regime_window: 60
+    bb_window: 20
+    bb_std: 2.0
+    ma_short: 20
+    ma_long: 60
+    stop_loss: -7.0    # 미국장은 변동성 크므로 손절 넉넉하게
+
+  momentum_us:
+    take_profit: 8.0
+    stop_loss: -5.0
