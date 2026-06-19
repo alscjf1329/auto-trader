@@ -1,4 +1,5 @@
 import json
+import time
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +8,20 @@ import config
 
 BASE_URL = "https://openapivts.koreainvestment.com:29443" if config.IS_PAPER else "https://openapi.koreainvestment.com:9443"
 _access_token = None
+
+# KIS API 초당 5회 제한 대응 (0.22초 간격 = 최대 4.5회/초)
+_RATE_LIMIT_INTERVAL = 0.22
+_last_call_time: float = 0.0
+
+
+def _rate_limit():
+    """KIS API 호출 간격 조절 (초당 거래건수 초과 방지)"""
+    global _last_call_time
+    now = time.time()
+    elapsed = now - _last_call_time
+    if elapsed < _RATE_LIMIT_INTERVAL:
+        time.sleep(_RATE_LIMIT_INTERVAL - elapsed)
+    _last_call_time = time.time()
 
 # 토큰 캐시 파일 (하루 1회 발급 제한 대응)
 _TOKEN_CACHE = Path(__file__).parent / "logs" / ".kis_token_cache.json"
@@ -106,6 +121,7 @@ def get_headers(tr_id):
 
 def get_stock_data(code: str) -> dict:
     """현재가 및 기본 데이터 조회"""
+    _rate_limit()
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
     headers = get_headers("FHKST01010100")
     params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}
@@ -127,6 +143,7 @@ def get_stock_data(code: str) -> dict:
 
 def get_balance() -> list:
     """주식 잔고 조회"""
+    _rate_limit()
     url = f"{BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
     tr_id = "VTTC8434R" if config.IS_PAPER else "TTTC8434R"
     headers = get_headers(tr_id)
@@ -160,6 +177,7 @@ def buy(code: str, amount: int):
         print(f"[{code}] 매수 금액 부족 (현재가: {current}원, 예산: {amount}원)")
         return
 
+    _rate_limit()
     body = {
         "CANO": config.ACCT_STOCK,
         "ACNT_PRDT_CD": "01",
@@ -174,6 +192,7 @@ def buy(code: str, amount: int):
 
 def sell(code: str, qty: int):
     """시장가 매도"""
+    _rate_limit()
     url = f"{BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
     tr_id = "VTTC0801U" if config.IS_PAPER else "TTTC0801U"
     headers = get_headers(tr_id)
@@ -198,6 +217,7 @@ def get_stock_data_us(ticker: str, exchange: str) -> dict:
     미국주식 현재가 조회
     exchange: NAS / NYS / AMS
     """
+    _rate_limit()
     url = f"{BASE_URL}/uapi/overseas-price/v1/quotations/price"
     headers = get_headers("HHDFS76200200")
     params = {
@@ -223,6 +243,7 @@ def get_stock_data_us(ticker: str, exchange: str) -> dict:
 
 def get_balance_us() -> list:
     """미국주식 잔고 조회"""
+    _rate_limit()
     url = f"{BASE_URL}/uapi/overseas-stock/v1/trading/inquire-balance"
     tr_id = "VTTS3012R" if config.IS_PAPER else "TTTS3012R"
     headers = get_headers(tr_id)
@@ -297,6 +318,7 @@ def get_investor_flow(code: str) -> dict:
     종목별 투자자별 매매동향 (외국인·기관·개인 순매수)
     TR: FHKST03010100
     """
+    _rate_limit()
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
     headers = get_headers("FHKST03010100")
     params = {
