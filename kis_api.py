@@ -9,9 +9,10 @@ import config
 BASE_URL = "https://openapivts.koreainvestment.com:29443" if config.IS_PAPER else "https://openapi.koreainvestment.com:9443"
 _access_token = None
 
-# KIS API 초당 5회 제한 대응 (0.22초 간격 = 최대 4.5회/초)
-_RATE_LIMIT_INTERVAL = 0.22
+# KIS API 초당 5회 제한 대응 (0.35초 간격 = 최대 2.8회/초, 여유있게)
+_RATE_LIMIT_INTERVAL = 0.35
 _last_call_time: float = 0.0
+_RATE_LIMIT_ERROR = "초당 거래건수를 초과"
 
 
 def _rate_limit():
@@ -22,6 +23,21 @@ def _rate_limit():
     if elapsed < _RATE_LIMIT_INTERVAL:
         time.sleep(_RATE_LIMIT_INTERVAL - elapsed)
     _last_call_time = time.time()
+
+
+def _kis_get(url: str, headers: dict, params: dict, retries: int = 3) -> dict:
+    """GET 요청 + 초당 거래건수 초과 시 자동 재시도"""
+    for attempt in range(retries):
+        _rate_limit()
+        res = requests.get(url, headers=headers, params=params).json()
+        msg = res.get("msg1", "") or res.get("message", "")
+        if _RATE_LIMIT_ERROR in msg:
+            wait = 1.0 * (attempt + 1)
+            print(f"  [KIS] 속도 제한 → {wait:.0f}초 대기 후 재시도 ({attempt+1}/{retries})")
+            time.sleep(wait)
+            continue
+        return res
+    return res  # 마지막 응답 그대로 반환
 
 # 토큰 캐시 파일 (하루 1회 발급 제한 대응)
 _TOKEN_CACHE = Path(__file__).parent / "logs" / ".kis_token_cache.json"
@@ -121,11 +137,10 @@ def get_headers(tr_id):
 
 def get_stock_data(code: str) -> dict:
     """현재가 및 기본 데이터 조회"""
-    _rate_limit()
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
     headers = get_headers("FHKST01010100")
     params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}
-    res = requests.get(url, headers=headers, params=params).json()
+    res = _kis_get(url, headers, params)
     if "output" not in res:
         msg = res.get("msg1") or res.get("message") or str(res)
         raise ValueError(f"KIS API 오류 [{code}]: {msg}")
@@ -143,7 +158,6 @@ def get_stock_data(code: str) -> dict:
 
 def get_balance() -> list:
     """주식 잔고 조회"""
-    _rate_limit()
     url = f"{BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
     tr_id = "VTTC8434R" if config.IS_PAPER else "TTTC8434R"
     headers = get_headers(tr_id)
@@ -160,7 +174,7 @@ def get_balance() -> list:
         "CTX_AREA_FK100": "",
         "CTX_AREA_NK100": "",
     }
-    res = requests.get(url, headers=headers, params=params).json()
+    res = _kis_get(url, headers, params)
     return res.get("output1", [])
 
 
@@ -217,7 +231,6 @@ def get_stock_data_us(ticker: str, exchange: str) -> dict:
     미국주식 현재가 조회
     exchange: NAS / NYS / AMS
     """
-    _rate_limit()
     url = f"{BASE_URL}/uapi/overseas-price/v1/quotations/price"
     headers = get_headers("HHDFS76200200")
     params = {
@@ -225,7 +238,7 @@ def get_stock_data_us(ticker: str, exchange: str) -> dict:
         "EXCD": exchange,
         "SYMB": ticker,
     }
-    res = requests.get(url, headers=headers, params=params).json()
+    res = _kis_get(url, headers, params)
     out = res.get("output", {})
     return {
         "ticker":     ticker,
@@ -243,7 +256,6 @@ def get_stock_data_us(ticker: str, exchange: str) -> dict:
 
 def get_balance_us() -> list:
     """미국주식 잔고 조회"""
-    _rate_limit()
     url = f"{BASE_URL}/uapi/overseas-stock/v1/trading/inquire-balance"
     tr_id = "VTTS3012R" if config.IS_PAPER else "TTTS3012R"
     headers = get_headers(tr_id)
@@ -255,7 +267,7 @@ def get_balance_us() -> list:
         "CTX_AREA_FK200": "",
         "CTX_AREA_NK200": "",
     }
-    res = requests.get(url, headers=headers, params=params).json()
+    res = _kis_get(url, headers, params)
     return res.get("output1", [])
 
 
@@ -318,7 +330,6 @@ def get_investor_flow(code: str) -> dict:
     종목별 투자자별 매매동향 (외국인·기관·개인 순매수)
     TR: FHKST03010100
     """
-    _rate_limit()
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor"
     headers = get_headers("FHKST03010100")
     params = {
@@ -326,7 +337,7 @@ def get_investor_flow(code: str) -> dict:
         "fid_input_iscd": code,
     }
     try:
-        res = requests.get(url, headers=headers, params=params).json()
+        res = _kis_get(url, headers, params)
         out = res.get("output", {})
         return {
             "code": code,
@@ -355,7 +366,7 @@ def get_market_index() -> dict:
             "fid_input_iscd": market_code,
         }
         try:
-            out = requests.get(url, headers=headers, params=params).json().get("output", {})
+            out = _kis_get(url, headers, params).get("output", {})
             result[label] = {
                 "current": float(out.get("bstp_nmix_prpr", 0)),
                 "change_pct": float(out.get("bstp_nmix_prdy_ctrt", 0)),
@@ -381,7 +392,7 @@ def get_sector_flow() -> list[dict]:
         "fid_trgt_cls_code": "0",
     }
     try:
-        res = requests.get(url, headers=headers, params=params).json()
+        res = _kis_get(url, headers, params)
         rows = res.get("output", []) or []
         sectors = []
         for r in rows[:15]:   # 상위 15개 업종
