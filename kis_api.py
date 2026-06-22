@@ -240,16 +240,20 @@ def get_stock_data_us(ticker: str, exchange: str) -> dict:
     }
     res = _kis_get(url, headers, params)
     out = res.get("output", {})
+    def _f(key, default=0.0):
+        v = out.get(key)
+        return float(v) if v not in (None, "", "-") else default
+
     return {
         "ticker":     ticker,
         "code":       ticker,           # brain.py 공통 인터페이스 호환
         "exchange":   exchange,
-        "current":    float(out.get("last", 0)),       # 현재가 (USD)
-        "open":       float(out.get("open", 0)),       # 시가
-        "high_52w":   float(out.get("h52p", 0)),       # 52주 최고
-        "low_52w":    float(out.get("l52p", 0)),       # 52주 최저
-        "volume":     int(out.get("tvol", 0)),         # 거래량
-        "change_pct": float(out.get("rate", 0)),       # 등락률(%)
+        "current":    _f("last"),       # 현재가 (USD)
+        "open":       _f("open"),       # 시가
+        "high_52w":   _f("h52p"),       # 52주 최고
+        "low_52w":    _f("l52p"),       # 52주 최저
+        "volume":     int(out.get("tvol") or 0),       # 거래량
+        "change_pct": _f("rate"),       # 등락률(%)
         "market":     "US",
     }
 
