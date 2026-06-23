@@ -15,10 +15,11 @@ Claude AI 기반 한국·미국 주식 자동매매 시스템.
 6. [매매 로직 흐름](#매매-로직-흐름)
 7. [리스크 관리](#리스크-관리)
 8. [안전장치](#안전장치)
-9. [텔레그램 알림](#텔레그램-알림)
-10. [모니터링 대시보드](#모니터링-대시보드)
-11. [팩터 모델](#팩터-모델)
-12. [의존성](#의존성)
+9. [텔레그램 명령어](#텔레그램-명령어)
+10. [텔레그램 알림](#텔레그램-알림)
+11. [모니터링 대시보드](#모니터링-대시보드)
+12. [팩터 모델](#팩터-모델)
+13. [의존성](#의존성)
 
 ---
 
@@ -294,6 +295,26 @@ IC(Information Coefficient) 백테스트로 최적화된 가중치입니다.
 | `correlation_filter` | `true` | 상관계수 필터 활성화 |
 | `correlation_threshold` | `0.70` | 이 이상이면 '동일 방향 종목'으로 제외 |
 
+### blacklist
+
+매수를 영구적으로 제외할 종목 목록. `settings.yaml`에 초기값 설정 후 텔레그램 `/blacklist` 명령으로 런타임 수정 가능.
+
+```yaml
+blacklist:
+  kr:
+    - "035720"   # 카카오 — 변동성 과다
+  us:
+    - "TSLA"     # 테슬라 — 이벤트 리스크 높음
+```
+
+| 키 | 기본값 | 설명 |
+|----|--------|------|
+| `kr` | `[]` | 한국주식 제외 코드 목록 (6자리) |
+| `us` | `[]` | 미국주식 제외 티커 목록 |
+
+> `settings.yaml` 기본값 + 텔레그램 `/blacklist add`로 추가된 종목이 **합산** 적용됩니다.  
+> `/reset`으로 텔레그램 추가분만 초기화 (settings.yaml 값은 유지).
+
 ### safety
 
 | 키 | 기본값 | 설명 |
@@ -415,6 +436,61 @@ LIVE_TRADING_CONFIRMED=yes
 □ .env 에 LIVE_TRADING_CONFIRMED=yes 추가
 □ KIS_IS_PAPER=false 로 변경
 ```
+
+---
+
+## 텔레그램 명령어
+
+`python telegram_cmd.py` 를 별도 프로세스로 실행하면 텔레그램에서 실시간으로 봇을 제어할 수 있습니다.
+
+### 조회
+
+| 명령어 | 설명 |
+|--------|------|
+| `/status` | 시스템 상태, 시장 국면, 마지막 설정 변경 시각 |
+| `/holdings` | 보유 종목 + 미실현 손익 (한국·미국 통합) |
+| `/pool` | 오늘 후보 풀 + 팩터 점수 |
+| `/pnl` | 오늘 실현 손익·승률·매도 내역 |
+| `/state` | 현재 적용 중인 설정값 전체 |
+
+### 제어
+
+| 명령어 | 설명 |
+|--------|------|
+| `/pause` | 신규 매수 즉시 중단 (매도는 계속) |
+| `/resume` | 매수 재개 |
+| `/mode` | 현재 모드 확인 |
+| `/mode brain` | Brain(AI) 모드 전환 |
+| `/mode strategy` | Strategy(규칙) 모드 전환 |
+
+### 설정 변경
+
+| 명령어 | 설명 | 범위 |
+|--------|------|------|
+| `/set stop_loss -5.0` | 손절 기준 변경 (%) | -30 ~ 0 |
+| `/set take_profit 7.0` | 익절 기준 변경 (%) | 0 ~ 100 |
+| `/set buy_limit 3` | 한국장 최대 매수 종목 수 | 1 ~ 10 |
+| `/set buy_limit_us 2` | 미국장 최대 매수 종목 수 | 1 ~ 10 |
+| `/reset` | 모든 봇 설정 초기화 (settings.yaml 기본값으로) |
+
+### 블랙리스트
+
+매수 제외 종목을 실시간으로 추가/해제합니다.  
+봇 재시작 후에도 `logs/bot_state.json`에 유지됩니다.
+
+| 명령어 | 설명 |
+|--------|------|
+| `/blacklist` | 현재 블랙리스트 조회 |
+| `/blacklist add KR 005930` | 한국 종목 추가 |
+| `/blacklist add US NVDA` | 미국 종목 추가 |
+| `/blacklist remove KR 005930` | 한국 종목 해제 |
+| `/blacklist remove US NVDA` | 미국 종목 해제 |
+| `/blacklist clear KR` | 한국 블랙리스트 전체 초기화 |
+| `/blacklist clear US` | 미국 블랙리스트 전체 초기화 |
+| `/blacklist clear` | 전체 초기화 |
+
+> 영구 제외가 필요한 종목은 `settings.yaml`의 `blacklist.kr` / `blacklist.us`에 직접 추가하세요.  
+> 텔레그램으로 추가한 종목과 합산 적용됩니다.
 
 ---
 
@@ -550,6 +626,7 @@ pip install -r requirements.txt
 | `logs/portfolio_snapshots.json` | 일별 자산 스냅샷 (최근 365일) |
 | `logs/trailing_stops.json` | 트레일링 스탑 추적 중인 종목 |
 | `logs/research_cache.json` | 글로벌 IB 리서치 요약 캐시 |
+| `logs/bot_state.json` | 텔레그램 봇 설정 (pause/mode/blacklist 등 런타임 override) |
 
 ---
 

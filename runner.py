@@ -112,6 +112,14 @@ def _bot_state() -> dict:
         return {}
 
 
+def _get_blacklist(market: str = "KR") -> list:
+    """settings.yaml 기본 블랙리스트 + bot_state.json 런타임 추가분 합산"""
+    base = list(settings.BLACKLIST_KR if market == "KR" else settings.BLACKLIST_US)
+    key  = "kr" if market == "KR" else "us"
+    runtime = _bot_state().get("blacklist", {}).get(key, [])
+    return list(dict.fromkeys(base + runtime))  # 순서 유지, 중복 제거
+
+
 def _daily_loss_exceeded(market: str = "KR") -> bool:
     """
     오늘 실현 손실이 settings.SAFETY_DAILY_LOSS_LIMIT 초과 여부 확인.
@@ -316,6 +324,14 @@ def run_brain_mode():
             targets, list(balance.keys()), market="KR"
         )
 
+    # 블랙리스트 필터
+    bl_kr = _get_blacklist("KR")
+    if bl_kr and targets:
+        blocked = [c for c in targets if c in bl_kr]
+        targets = [c for c in targets if c not in bl_kr]
+        if blocked:
+            print(f"[Blacklist] 제외 {blocked}")
+
     for code in targets:
         if code in balance:
             print(f"  [{code}] 이미 보유 중 - 스킵")
@@ -480,6 +496,14 @@ def run_brain_mode_us():
             targets, list(balance_us.keys()), market="US"
         )
 
+    # 블랙리스트 필터
+    bl_us = _get_blacklist("US")
+    if bl_us and targets:
+        blocked = [t for t in targets if t in bl_us]
+        targets = [t for t in targets if t not in bl_us]
+        if blocked:
+            print(f"[Blacklist] 제외 {blocked}")
+
     for ticker in targets:
         if ticker in balance_us:
             print(f"  [{ticker}] 이미 보유 중 - 스킵")
@@ -546,7 +570,9 @@ def run_strategy_mode():
                 else:
                     print(f"  → 유지")
             else:
-                if strategy.should_buy(data):
+                if code in _get_blacklist("KR"):
+                    print(f"  → 블랙리스트 — 매수 스킵")
+                elif strategy.should_buy(data):
                     qty_est = settings.MAX_BUY_AMOUNT // data["current"]
                     print(f"  → 매수 {qty_est}주")
                     kis_api.buy(code, settings.MAX_BUY_AMOUNT)
@@ -625,7 +651,9 @@ def run_strategy_mode_us():
                 else:
                     print(f"  → 유지")
             else:
-                if strategy_us.should_buy(data):
+                if ticker in _get_blacklist("US"):
+                    print(f"  → 블랙리스트 — 매수 스킵")
+                elif strategy_us.should_buy(data):
                     qty_est = int(settings.MAX_BUY_AMOUNT_USD / data["current"])
                     if qty_est < 1:
                         print(f"  → 매수 수량 부족 (${data['current']:.2f} > ${settings.MAX_BUY_AMOUNT_USD})")

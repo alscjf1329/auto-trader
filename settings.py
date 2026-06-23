@@ -75,6 +75,11 @@ UNIVERSE_US_TICKERS : list = [s["ticker"] for s in UNIVERSE_US]
 UNIVERSE_US_MAP     : dict = {s["ticker"]: s["name"] for s in UNIVERSE_US}
 UNIVERSE_US_EXCH    : dict = {s["ticker"]: s["exchange"] for s in UNIVERSE_US}
 
+# ── 블랙리스트 ─────────────────────────────────────────────
+_bl = _cfg.get("blacklist", {})
+BLACKLIST_KR : list = _bl.get("kr", [])
+BLACKLIST_US : list = _bl.get("us", [])
+
 # ── 팩터 가중치 ─────────────────────────────────────────────
 FACTOR_WEIGHTS : dict = _cfg.get("factor_weights", {
     "momentum_6m":  0.21,

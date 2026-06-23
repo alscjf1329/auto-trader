@@ -70,6 +70,7 @@ def _default_state() -> dict:
         "take_profit_pct": None,
         "buy_limit":       None,
         "buy_limit_us":    None,
+        "blacklist":       {"kr": [], "us": []},
         "updated_at":      None,
     }
 
@@ -134,7 +135,16 @@ def _cmd_help():
         "  /set buy_limit 3     한국 최대 매수\n"
         "  /set buy_limit_us 2  미국 최대 매수\n"
         "  /reset               설정 초기화\n"
-        "  /state               현재 설정값 확인"
+        "  /state               현재 설정값 확인\n"
+        "\n<b>블랙리스트</b>\n"
+        "  /blacklist                     목록 조회\n"
+        "  /blacklist add KR 005930       한국 종목 추가\n"
+        "  /blacklist add US NVDA         미국 종목 추가\n"
+        "  /blacklist remove KR 005930    한국 종목 해제\n"
+        "  /blacklist remove US NVDA      미국 종목 해제\n"
+        "  /blacklist clear KR            한국 전체 초기화\n"
+        "  /blacklist clear US            미국 전체 초기화\n"
+        "  /blacklist clear               전체 초기화"
     )
     _send(text)
 
@@ -454,9 +464,99 @@ def _cmd_state():
         f"한국 매수한도  {_val('buy_limit')}개",
         f"미국 매수한도  {_val('buy_limit_us')}개",
     ]
+    bl = state.get("blacklist", {"kr": [], "us": []})
+    kr_bl = bl.get("kr", [])
+    us_bl = bl.get("us", [])
+    lines.append(f"블랙리스트 KR  {', '.join(kr_bl) if kr_bl else '없음'}")
+    lines.append(f"블랙리스트 US  {', '.join(us_bl) if us_bl else '없음'}")
     if state.get("updated_at"):
         lines.append(f"변경시각  {state['updated_at'][:16]}")
     _send("\n".join(lines))
+
+
+def _cmd_blacklist(args: list):
+    state = _load_state()
+    bl = state.setdefault("blacklist", {"kr": [], "us": []})
+
+    if not args:
+        kr = bl.get("kr", [])
+        us = bl.get("us", [])
+        lines = [
+            "🚫 <b>블랙리스트</b>",
+            _DIV,
+            f"🇰🇷 한국  {len(kr)}종목  " + (", ".join(kr) if kr else "(없음)"),
+            f"🇺🇸 미국  {len(us)}종목  " + (", ".join(us) if us else "(없음)"),
+            "",
+            "<i>/blacklist add KR 005930</i>",
+            "<i>/blacklist remove US NVDA</i>",
+            "<i>/blacklist clear KR</i>",
+        ]
+        _send("\n".join(lines))
+        return
+
+    subcmd = args[0].lower()
+
+    if subcmd == "add":
+        if len(args) < 3:
+            _send("사용법: /blacklist add [KR|US] [코드]\n예: /blacklist add KR 005930")
+            return
+        market = args[1].lower()
+        code   = args[2].upper()
+        if market not in ("kr", "us"):
+            _send("⚠️ 시장은 KR 또는 US만 가능합니다.")
+            return
+        if code in bl[market]:
+            _send(f"⚠️ <b>{code}</b> 는 이미 블랙리스트에 있습니다.")
+            return
+        bl[market].append(code)
+        state["updated_at"] = datetime.now().isoformat()
+        _save_state(state)
+        flag = "🇰🇷" if market == "kr" else "🇺🇸"
+        _send(f"🚫 {flag} <b>{code}</b> 블랙리스트 추가\n이후 매수 대상에서 제외됩니다.")
+
+    elif subcmd == "remove":
+        if len(args) < 3:
+            _send("사용법: /blacklist remove [KR|US] [코드]\n예: /blacklist remove KR 005930")
+            return
+        market = args[1].lower()
+        code   = args[2].upper()
+        if market not in ("kr", "us"):
+            _send("⚠️ 시장은 KR 또는 US만 가능합니다.")
+            return
+        if code not in bl.get(market, []):
+            _send(f"⚠️ <b>{code}</b> 는 블랙리스트에 없습니다.")
+            return
+        bl[market].remove(code)
+        state["updated_at"] = datetime.now().isoformat()
+        _save_state(state)
+        flag = "🇰🇷" if market == "kr" else "🇺🇸"
+        _send(f"✅ {flag} <b>{code}</b> 블랙리스트 해제")
+
+    elif subcmd == "clear":
+        market = args[1].lower() if len(args) > 1 else None
+        if market is None:
+            bl["kr"].clear()
+            bl["us"].clear()
+            state["updated_at"] = datetime.now().isoformat()
+            _save_state(state)
+            _send("✅ 블랙리스트 전체 초기화")
+        elif market in ("kr", "us"):
+            bl[market].clear()
+            state["updated_at"] = datetime.now().isoformat()
+            _save_state(state)
+            flag = "🇰🇷" if market == "kr" else "🇺🇸"
+            _send(f"✅ {flag} 블랙리스트 초기화")
+        else:
+            _send("⚠️ 사용법: /blacklist clear  또는  /blacklist clear KR")
+
+    else:
+        _send(
+            "⚠️ 사용법:\n"
+            "  /blacklist\n"
+            "  /blacklist add KR 005930\n"
+            "  /blacklist remove KR 005930\n"
+            "  /blacklist clear KR"
+        )
 
 
 # ══════════════════════════════════════════════════════════
@@ -470,17 +570,18 @@ def _handle(text: str):
     args  = parts[1:]
 
     routes = {
-        "help":     lambda: _cmd_help(),
-        "status":   lambda: _cmd_status(),
-        "holdings": lambda: _cmd_holdings(),
-        "pool":     lambda: _cmd_pool(),
-        "pnl":      lambda: _cmd_pnl(),
-        "pause":    lambda: _cmd_pause(),
-        "resume":   lambda: _cmd_resume(),
-        "mode":     lambda: _cmd_mode(args),
-        "set":      lambda: _cmd_set(args),
-        "reset":    lambda: _cmd_reset(),
-        "state":    lambda: _cmd_state(),
+        "help":       lambda: _cmd_help(),
+        "status":     lambda: _cmd_status(),
+        "holdings":   lambda: _cmd_holdings(),
+        "pool":       lambda: _cmd_pool(),
+        "pnl":        lambda: _cmd_pnl(),
+        "pause":      lambda: _cmd_pause(),
+        "resume":     lambda: _cmd_resume(),
+        "mode":       lambda: _cmd_mode(args),
+        "set":        lambda: _cmd_set(args),
+        "reset":      lambda: _cmd_reset(),
+        "state":      lambda: _cmd_state(),
+        "blacklist":  lambda: _cmd_blacklist(args),
     }
 
     handler = routes.get(cmd)
