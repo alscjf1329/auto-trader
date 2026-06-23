@@ -124,11 +124,10 @@ def get_access_token():
 
 def get_headers(tr_id):
     """공통 헤더"""
-    if _access_token is None:
-        get_access_token()
+    token = _access_token or get_access_token()
     return {
         "Content-Type": "application/json",
-        "authorization": f"Bearer {_access_token}",
+        "authorization": f"Bearer {token}",
         "appkey": config.APP_KEY,
         "appsecret": config.APP_SECRET,
         "tr_id": tr_id,
