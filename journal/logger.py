@@ -125,6 +125,21 @@ def log_trade(
     profit_str = f" | 손익 {profit_pct:+.2f}% ({profit_amount:+,}원)" if action == "SELL" and profit_pct else ""
     print(f"[Journal] {action_label} 기록 → {name}({code}) {qty}주 @ {price:,}원{profit_str}")
 
+    # ── profit-board 수익 인증 웹훅 ───────────────────────
+    try:
+        import verify
+        import config as _cfg
+        verify.report_trade(
+            action=action, code=code, name=name,
+            price=price, qty=qty,
+            profit_pct=float(profit_pct) if profit_pct else 0.0,
+            profit_amount=float(profit_amount) if profit_amount else 0.0,
+            mode=mode,
+            is_paper=_cfg.IS_PAPER,
+        )
+    except Exception:
+        pass
+
     # ── 텔레그램 알림 ──────────────────────────────────────
     try:
         import notify

@@ -2,21 +2,30 @@
 telegram_cmd.py - 텔레그램 봇 명령어 핸들러
 
 지원 명령어:
-  /help                   명령어 목록
-  /status                 현재 시스템 상태
-  /holdings               보유 종목 + 미실현 손익
-  /pool                   오늘 후보 풀
-  /pnl                    오늘 실현 손익
-  /pause                  신규 매수 일시 중단
-  /resume                 매수 재개
-  /set stop_loss [값]     손절 기준 변경 (%)
-  /set take_profit [값]   익절 기준 변경 (%)
-  /set buy_limit [n]      한국장 최대 매수 종목 수
-  /set buy_limit_us [n]   미국장 최대 매수 종목 수
-  /reset                  모든 설정 초기화 (settings.yaml 기본값으로)
-  /mode                   현재 모드 확인
-  /mode brain             Brain(AI) 모드로 전환
-  /mode strategy          Strategy(규칙) 모드로 전환
+  /help                        명령어 목록
+  /status                      현재 시스템 상태
+  /holdings                    보유 종목 + 미실현 손익
+  /pool                        오늘 후보 풀
+  /pnl                         오늘 실현 손익
+  /state                       현재 적용 중인 설정값 전체
+  /pause                       신규 매수 일시 중단
+  /resume                      매수 재개
+  /mode                        현재 모드 확인
+  /mode brain                  Brain(AI) 모드로 전환
+  /mode strategy               Strategy(규칙) 모드로 전환
+  /set stop_loss -5.0          손절 기준 변경 (%, -30~0)
+  /set take_profit 7.0         익절 기준 변경 (%, 0~100)
+  /set buy_limit [n]           한국장 최대 매수 종목 수 (1~10)
+  /set buy_limit_us [n]        미국장 최대 매수 종목 수 (1~10)
+  /reset                       모든 설정 초기화 (settings.yaml 기본값으로)
+  /blacklist                   블랙리스트 조회
+  /blacklist add KR 005930     한국 종목 매수 제외 추가
+  /blacklist add US TSLA       미국 종목 매수 제외 추가
+  /blacklist remove KR 005930  한국 종목 해제
+  /blacklist remove US TSLA    미국 종목 해제
+  /blacklist clear KR          한국 블랙리스트 전체 초기화
+  /blacklist clear US          미국 블랙리스트 전체 초기화
+  /blacklist clear             전체 초기화
 """
 
 import os
@@ -130,7 +139,7 @@ def _cmd_help():
         "  /mode                현재 모드 확인\n"
         "  /mode brain          Brain(AI) 모드 전환\n"
         "  /mode strategy       Strategy(규칙) 모드 전환\n"
-        "  /set stop_loss 5.0   손절 기준 (%)\n"
+        "  /set stop_loss -5.0  손절 기준 (%, -30~0)\n"
         "  /set take_profit 7.0 익절 기준 (%)\n"
         "  /set buy_limit 3     한국 최대 매수\n"
         "  /set buy_limit_us 2  미국 최대 매수\n"

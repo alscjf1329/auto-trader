@@ -1,25 +1,50 @@
 # Auto-Trader
 
 Claude AI 기반 한국·미국 주식 자동매매 시스템.  
-퀀트 팩터 스코어링으로 1차 선별 → Claude AI가 2차 보정 → KIS API로 자동 체결.
+퀀트 팩터 스코어링 → Claude AI 3단계 보정 → KIS API 자동 체결.
 
 ---
 
 ## 목차
 
-1. [아키텍처](#아키텍처)
-2. [파일 구조](#파일-구조)
-3. [초기 세팅 (필수)](#초기-세팅-필수)
-4. [실행 방법](#실행-방법)
-5. [설정 파일 상세](#설정-파일-상세)
-6. [매매 로직 흐름](#매매-로직-흐름)
-7. [리스크 관리](#리스크-관리)
-8. [안전장치](#안전장치)
-9. [텔레그램 명령어](#텔레그램-명령어)
-10. [텔레그램 알림](#텔레그램-알림)
-11. [모니터링 대시보드](#모니터링-대시보드)
-12. [팩터 모델](#팩터-모델)
+1. [빠른 시작](#빠른-시작)
+2. [아키텍처](#아키텍처)
+3. [파일 구조](#파일-구조)
+4. [설정 파일 상세](#설정-파일-상세)
+5. [매매 로직 흐름](#매매-로직-흐름)
+6. [리스크 관리](#리스크-관리)
+7. [안전장치](#안전장치)
+8. [텔레그램 명령어](#텔레그램-명령어)
+9. [텔레그램 알림](#텔레그램-알림)
+10. [전략 시스템](#전략-시스템)
+11. [Profit Board 연동](#profit-board-연동)
+12. [모니터링 대시보드](#모니터링-대시보드)
 13. [의존성](#의존성)
+14. [FAQ](#faq)
+
+---
+
+## 빠른 시작
+
+```bash
+# 1. 의존성 설치
+pip install -r requirements.txt
+
+# 2. 환경변수 설정
+cp .env.example .env
+# → .env 열어서 KIS / Anthropic / 텔레그램 키 입력
+
+# 3. 모의투자로 실행 (KIS_IS_PAPER=true 기본)
+python runner.py
+
+# 4. (별도 터미널) 텔레그램 봇 명령어 핸들러
+python telegram_cmd.py
+
+# 5. (선택) 모니터링 대시보드
+streamlit run dashboard/app.py   # → http://localhost:8501
+```
+
+> **반드시 모의투자(KIS_IS_PAPER=true)로 2주 이상 검증 후 실전 전환하세요.**
 
 ---
 
@@ -35,25 +60,32 @@ Claude AI 기반 한국·미국 주식 자동매매 시스템.
         │ 상위 pool_size×2 종목
         ▼
   ┌─────────────┐
-  │  brain.py   │  Claude Opus 4.7 — Stage 1 (AI 보정·섹터 분산)
+  │  brain.py   │  Claude Opus — Stage 1 (AI 보정·섹터 분산)
   └─────┬───────┘
-        │ 후보 풀 (KR 15종목 / US 8종목) → pool_cache.json 하루 1회 캐시
+        │ 후보 풀 → pool_cache.json 하루 1회 캐시
         ▼  KIS 실시간 시세
   ┌─────────────┐
-  │  brain.py   │  Claude Sonnet 4.6 — Stage 2 (당일 모멘텀 + 이상 징후 필터)
+  │  brain.py   │  Claude Sonnet — Stage 2 (당일 모멘텀 + 이상 징후 필터)
   └─────┬───────┘
         │ 최종 매수 대상 (최대 3종목)
         ▼
-  ┌─────────────┐     ┌──────────────────┐
-  │  runner.py  │────►│  KIS API 체결    │
-  │  (스케줄러) │     └──────────────────┘
-  └─────┬───────┘
+  ┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
+  │  runner.py  │────►│  KIS API 체결    │────►│  verify.py   │
+  │  (스케줄러) │     └──────────────────┘     │  (HMAC 서명) │
+  └─────┬───────┘                              └──────────────┘
         │ 매도 판단 (30분마다)
         ▼
   ① 트레일링 스탑 (risk.py)  — 최고가 대비 5% 이탈 시 즉시 매도
   ② 익절 규칙                — +7% 즉시 매도
   ③ Claude Haiku — Stage 3  — 정성 판단 (애매 구간)
 ```
+
+**실행 모드:**
+
+| 모드 | 설명 |
+|------|------|
+| `brain` | Claude AI 3단계 엔진 (기본) |
+| `strategy` | `strategies/` 폴더의 규칙 기반 전략 실행 |
 
 ---
 
@@ -65,210 +97,144 @@ auto-trader/
 ├── brain.py                    # Claude AI 3단계 매매 엔진
 ├── factor.py                   # 퀀트 팩터 스코어링 (IC 검증)
 ├── risk.py                     # 포지션 사이징, 트레일링 스탑, 상관계수 필터
-├── settings.py                 # settings.yaml 로더 (상수 제공)
+├── settings.py                 # settings.yaml 로더
 ├── settings.yaml               # 전체 설정 파일
-├── notify.py                   # 텔레그램 알림 모듈
+├── notify.py                   # 텔레그램 알림
+├── telegram_cmd.py             # 텔레그램 명령어 봇 (별도 프로세스)
 ├── kis_api.py                  # KIS (한국투자증권) API 래퍼
+├── verify.py                   # Profit Board HMAC 서명 전송
+├── install_strategy.py         # 마켓플레이스 전략 설치 CLI
+│
+├── strategies/                 # 규칙 기반 전략 모음
+│   ├── base.py                 # BaseStrategy ABC (공통 인터페이스)
+│   ├── regime_adaptive.py
+│   ├── momentum.py
+│   └── dual_momentum.py
 │
 ├── journal/
 │   ├── logger.py               # 매매 이력 기록 (CSV + JSON)
 │   └── snapshot.py             # 일별 포트폴리오 자산 스냅샷
 │
 ├── dashboard/
-│   ├── app.py                  # Streamlit 모니터링 대시보드 (4페이지)
+│   ├── app.py                  # Streamlit 모니터링 대시보드
 │   └── data.py                 # 대시보드용 데이터 로더
-│
-├── strategies/                 # Strategy 모드 전략 모음
-│   ├── regime_adaptive.py
-│   ├── momentum.py
-│   └── ...
 │
 ├── backtest/
 │   └── factor_backtest.py      # 팩터 IC/ICIR/성과 백테스트
 │
 ├── logs/                       # 런타임 생성 (git 제외)
-│   ├── trades.csv                  # 전체 거래 이력
-│   ├── trades/YYYY-MM-DD.json      # 날짜별 거래 JSON
-│   ├── pool_cache.json             # 한국 후보 풀 캐시 (Stage 1, 하루 1회)
-│   ├── pool_cache_us.json          # 미국 후보 풀 캐시 (Stage 1, 하루 1회)
-│   ├── stage2_cache.json           # 한국 Stage 2 결과 캐시 (TTL 15분)
-│   ├── stage2_cache_us.json        # 미국 Stage 2 결과 캐시 (TTL 15분)
-│   ├── regime_cache.json           # 시장 국면 이력
-│   ├── portfolio_snapshots.json    # 일별 자산 스냅샷
-│   ├── trailing_stops.json         # 트레일링 스탑 추적 데이터
-│   ├── research_cache.json         # 글로벌 IB 리서치 캐시
-│   └── runner.log                  # 실행 로그
+│   ├── trades.csv
+│   ├── trades/YYYY-MM-DD.json
+│   ├── pool_cache.json
+│   ├── pool_cache_us.json
+│   ├── stage2_cache.json
+│   ├── stage2_cache_us.json
+│   ├── regime_cache.json
+│   ├── portfolio_snapshots.json
+│   ├── trailing_stops.json
+│   ├── research_cache.json
+│   ├── bot_state.json          # 텔레그램 봇 런타임 설정 (pause/mode/blacklist)
+│   └── runner.log
 │
 ├── .env                        # API 키 (git 제외)
-├── .env.example                # 환경변수 예시
+├── .env.example
 └── requirements.txt
-```
-
----
-
-## 초기 세팅 (필수)
-
-### 1단계 — 저장소 클론 & 의존성 설치
-
-```bash
-git clone <repo-url>
-cd auto-trader
-pip install -r requirements.txt
-```
-
-### 2단계 — .env 파일 생성
-
-```bash
-cp .env.example .env
-```
-
-`.env` 를 열어 값을 채웁니다:
-
-```dotenv
-# ── KIS (한국투자증권) API ─────────────────────────────────
-# 발급: https://apiportal.koreainvestment.com → 앱 등록
-KIS_APP_KEY=여기에_앱키_입력
-KIS_APP_SECRET=여기에_앱시크릿_입력
-KIS_ACCT_STOCK=계좌번호8자리
-KIS_ACCT_OVRS=계좌번호8자리   # 해외주식 계좌 (없으면 위와 동일)
-KIS_HTS_ID=HTS아이디
-KIS_IS_PAPER=true             # 반드시 true로 시작 (모의투자)
-
-# ── Anthropic Claude API ──────────────────────────────────
-# 발급: https://console.anthropic.com
-ANTHROPIC_API_KEY=sk-ant-...
-
-# ── 텔레그램 알림 (선택, 강력 권장) ───────────────────────
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-
-# ── 실전 전환 시에만 추가 ─────────────────────────────────
-# LIVE_TRADING_CONFIRMED=yes
-```
-
-### 3단계 — 텔레그램 봇 설정 (선택)
-
-```
-1. 텔레그램에서 @BotFather 검색
-2. /newbot 명령 → 봇 이름 입력 → TOKEN 발급
-3. 만든 봇에게 아무 메시지 전송 (먼저 해야 chat_id 조회 가능)
-4. 아래 URL에서 chat_id 확인 (숫자 부분):
-   https://api.telegram.org/bot<TOKEN>/getUpdates
-   응답 예: "chat":{"id": 12345678, ...}
-5. .env에 입력:
-   TELEGRAM_BOT_TOKEN=1234567890:AAF...
-   TELEGRAM_CHAT_ID=12345678
-```
-
-### 4단계 — settings.yaml 확인
-
-기본값으로 바로 실행 가능합니다. 최소한 아래만 확인하세요:
-
-```yaml
-trading:
-  mode: brain              # brain(AI) 또는 strategy(규칙 기반)
-  max_buy_amount: 100000   # 1회 최대 매수 금액 (원)
-
-brain:
-  pool_size: 15            # 한국 후보 풀 크기
-  buy_limit: 3             # 동시 최대 매수 종목 수
-
-risk:
-  max_positions: 5         # 최대 보유 종목 수
-  take_profit_pct: 7.0     # 익절 기준 (%)
-  trailing_stop_pct: 5.0   # 트레일링 스탑 (최고가 대비 %)
-```
-
-### 5단계 — 모의투자 실행
-
-```bash
-# 터미널 1: 매매 봇
-python runner.py
-
-# 터미널 2: 대시보드 (선택)
-streamlit run dashboard/app.py
-# → 브라우저 http://localhost:8501
-```
-
----
-
-## 실행 방법
-
-### 매매 봇
-
-```bash
-python runner.py
-```
-
-- 평일 장 시간에만 자동 실행 (한국 09:05~15:20, 미국 23:00~04:30 KST)
-- 30분마다 매매 판단 반복
-- Ctrl+C 로 종료
-
-### 대시보드
-
-```bash
-streamlit run dashboard/app.py
-```
-
-### 팩터 백테스트
-
-```bash
-python backtest/factor_backtest.py
 ```
 
 ---
 
 ## 설정 파일 상세
 
-### telegram
+### .env
+
+```dotenv
+# ── KIS (한국투자증권) API ────────────────────────────────
+# 발급: https://apiportal.koreainvestment.com → 앱 등록
+KIS_APP_KEY=
+KIS_APP_SECRET=
+KIS_ACCT_STOCK=계좌번호8자리
+KIS_ACCT_OVRS=계좌번호8자리
+KIS_HTS_ID=
+KIS_IS_PAPER=true              # 반드시 true로 시작
+
+# ── Anthropic Claude API ─────────────────────────────────
+ANTHROPIC_API_KEY=sk-ant-...
+
+# ── 텔레그램 알림 ─────────────────────────────────────────
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+
+# ── Profit Board 수익 인증 (선택) ─────────────────────────
+VERIFY_ENDPOINT=https://your-profit-board.com
+VERIFY_SECRET=
+VERIFY_USER_ID=
+
+# ── 실전 전환 시에만 추가 ──────────────────────────────────
+# LIVE_TRADING_CONFIRMED=yes
+```
+
+텔레그램 `CHAT_ID` 확인 방법: 봇에 아무 메시지 전송 후  
+`https://api.telegram.org/bot<TOKEN>/getUpdates` → `"chat":{"id": 숫자}` 에서 확인.
+
+### settings.yaml — 주요 섹션
+
+#### trading
 
 | 키 | 기본값 | 설명 |
 |----|--------|------|
-| `enabled` | `true` | 전체 알림 마스터 스위치 |
-| `on_buy` | `true` | 매수 체결 알림 |
-| `on_sell` | `true` | 매도 체결 알림 (손익 포함) |
-| `on_error` | `true` | 에러 발생 알림 |
-| `on_regime` | `true` | 시장 국면 전환 알림 (bull↔bear) |
-| `on_pool` | `false` | 후보 풀 선정 알림 (장황해서 기본 OFF) |
-| `on_startup` | `true` | 러너 시작 알림 |
-| `daily_summary` | `true` | 일일 거래 요약 |
-| `daily_summary_time` | `"16:00"` | 요약 전송 시각 (KST) |
+| `mode` | `brain` | `brain` = AI, `strategy` = 규칙 기반 |
+| `market_open` | `"09:05"` | 한국장 시작 (KST) |
+| `market_close` | `"15:20"` | 한국장 종료 (KST) |
+| `market_open_us` | `"23:00"` | 미국장 시작 (KST) |
+| `market_close_us` | `"04:30"` | 미국장 종료 (KST) |
+| `interval_minutes` | `30` | 체크 주기 (분) |
+| `max_buy_amount` | `100000` | 1회 최대 매수 (원) |
+| `max_buy_amount_usd` | `100` | 1회 최대 매수 (USD) |
+| `regime_filter` | `true` | Bear 국면 매수 차단 |
 
-### trading
-
-| 키 | 기본값 | 설명 |
-|----|--------|------|
-| `mode` | `brain` | `brain` = AI 자동매매, `strategy` = 규칙 기반 |
-| `market_open` | `"09:05"` | 한국장 시작 시각 (KST) |
-| `market_close` | `"15:20"` | 한국장 종료 시각 (KST) |
-| `market_open_us` | `"23:00"` | 미국장 시작 시각 (KST) |
-| `market_close_us` | `"04:30"` | 미국장 종료 시각 (KST) |
-| `interval_minutes` | `30` | 한국장 체크 주기 (분) |
-| `max_buy_amount` | `100000` | 1회 최대 매수 금액 (원) |
-| `max_buy_amount_usd` | `100` | 1회 최대 매수 금액 (USD) |
-| `stop_loss_pct` | `-5.0` | 손절 기준 (%) |
-| `regime_filter` | `true` | Bear 국면 신규 매수 차단 |
-
-### brain
+#### brain
 
 | 키 | 기본값 | 설명 |
 |----|--------|------|
 | `pool_size` | `15` | 한국 후보 풀 크기 |
 | `pool_size_us` | `8` | 미국 후보 풀 크기 |
-| `buy_limit` | `3` | 최대 동시 매수 종목 수 (KR) |
-| `buy_limit_us` | `3` | 최대 동시 매수 종목 수 (US) |
-| `pool_refresh` | `daily` | 후보 풀 갱신 주기 (`daily` / `weekly`) |
-| `model_stage1` | `claude-opus-4-7` | Stage 1 모델 (유니버스→풀) |
-| `model_stage2` | `claude-sonnet-4-6` | Stage 2 모델 (풀→매수) |
-| `model_stage3` | `claude-haiku-4-5` | Stage 3 모델 (매도 판단) |
+| `buy_limit` | `3` | 동시 최대 매수 (KR) |
+| `buy_limit_us` | `3` | 동시 최대 매수 (US) |
+| `pool_refresh` | `daily` | 후보 풀 갱신 주기 |
+| `model_stage1` | `claude-opus-4-7` | Stage 1 모델 |
+| `model_stage2` | `claude-sonnet-4-6` | Stage 2 모델 |
+| `model_stage3` | `claude-haiku-4-5` | Stage 3 모델 |
 
-### factor_weights
+#### risk
 
-IC(Information Coefficient) 백테스트로 최적화된 가중치입니다.  
-합계가 1.0이 되도록 조정하세요.
+| 키 | 기본값 | 설명 |
+|----|--------|------|
+| `risk_per_trade_pct` | `1.0` | 1회 최대 손실: 포트폴리오의 1% |
+| `atr_multiplier` | `2.0` | ATR 손절 배수 |
+| `max_position_pct` | `20.0` | 단일 종목 최대 비중 (%) |
+| `max_positions` | `5` | 최대 동시 보유 종목 수 |
+| `take_profit_pct` | `7.0` | 익절 기준 (%) |
+| `trailing_stop_pct` | `5.0` | 트레일링 스탑: 최고가 대비 허용 이탈 (%) |
+| `correlation_threshold` | `0.70` | 상관계수 이상 종목 제외 |
 
-| 팩터 | 기본 가중치 | IC | ICIR | 설명 |
-|------|------------|-----|------|------|
+#### blacklist
+
+매수를 제외할 종목 목록. `settings.yaml` 정적 목록 + 텔레그램 `/blacklist add` 런타임 추가분이 합산 적용됩니다.
+
+```yaml
+blacklist:
+  kr:
+    - "035720"   # 카카오 — 변동성 과다
+  us:
+    - "TSLA"     # 테슬라 — 이벤트 리스크
+```
+
+#### factor_weights
+
+IC 백테스트로 최적화된 가중치입니다. 합계 = 1.0.
+
+| 팩터 | 가중치 | IC | ICIR | 설명 |
+|------|--------|-----|------|------|
 | `momentum_6m` | 0.21 | 0.088 | 0.37 | 6개월 수익률 백분위 |
 | `pos_52w` | 0.18 | 0.086 | 0.32 | 52주 위치 (30~70% 선호) |
 | `volume_ratio` | 0.15 | 0.044 | 0.25 | 5일/20일 거래량 비율 |
@@ -278,49 +244,14 @@ IC(Information Coefficient) 백테스트로 최적화된 가중치입니다.
 | `momentum_1m` | 0.07 | 0.027 | 0.12 | 1개월 수익률 백분위 |
 | `sector` | 0.05 | — | — | 섹터 강도 |
 
-> 미국장에서는 `foreign_flow`, `inst_flow` 가 자동 제외되고 나머지로 재정규화됩니다.
+> 미국장에서는 `foreign_flow`, `inst_flow`가 자동 제외되고 나머지로 재정규화됩니다.
 
-### risk
-
-| 키 | 기본값 | 설명 |
-|----|--------|------|
-| `risk_per_trade_pct` | `1.0` | 1회 최대 손실: 포트폴리오의 1% |
-| `atr_multiplier` | `2.0` | ATR 손절 배수 |
-| `max_position_pct` | `20.0` | 단일 종목 최대 비중 (%) |
-| `max_total_exposure_pct` | `80.0` | 전체 주식 최대 노출도 (%) |
-| `max_positions` | `5` | 최대 동시 보유 종목 수 |
-| `take_profit_pct` | `7.0` | 익절 기준 (%) |
-| `trailing_stop_pct` | `5.0` | 트레일링 스탑: 최고가 대비 허용 이탈 (%) |
-| `trailing_stop_enabled` | `true` | 트레일링 스탑 활성화 |
-| `correlation_filter` | `true` | 상관계수 필터 활성화 |
-| `correlation_threshold` | `0.70` | 이 이상이면 '동일 방향 종목'으로 제외 |
-
-### blacklist
-
-매수를 영구적으로 제외할 종목 목록. `settings.yaml`에 초기값 설정 후 텔레그램 `/blacklist` 명령으로 런타임 수정 가능.
-
-```yaml
-blacklist:
-  kr:
-    - "035720"   # 카카오 — 변동성 과다
-  us:
-    - "TSLA"     # 테슬라 — 이벤트 리스크 높음
-```
-
-| 키 | 기본값 | 설명 |
-|----|--------|------|
-| `kr` | `[]` | 한국주식 제외 코드 목록 (6자리) |
-| `us` | `[]` | 미국주식 제외 티커 목록 |
-
-> `settings.yaml` 기본값 + 텔레그램 `/blacklist add`로 추가된 종목이 **합산** 적용됩니다.  
-> `/reset`으로 텔레그램 추가분만 초기화 (settings.yaml 값은 유지).
-
-### safety
+#### safety
 
 | 키 | 기본값 | 설명 |
 |----|--------|------|
 | `daily_loss_limit_krw` | `500000` | 당일 손실 한도 (원), `0` = 비활성화 |
-| `daily_loss_limit_usd` | `300` | 당일 손실 한도 (USD), `0` = 비활성화 |
+| `daily_loss_limit_usd` | `300` | 당일 손실 한도 (USD) |
 
 ---
 
@@ -330,72 +261,60 @@ blacklist:
 [09:05 KST] 장 시작
 │
 ├─ Stage 1: 후보 풀 선정 (하루 1회, 이후 캐시 재사용)
-│   ├─ yfinance 6개월 OHLCV 수집 (유니버스 전체 병렬)
-│   ├─ KIS API 수급 데이터 수집 (외국인/기관 순매수)
+│   ├─ yfinance 6개월 OHLCV + KIS 수급 데이터 병렬 수집
 │   ├─ 팩터 스코어링 → 상위 pool_size×2개 선별
-│   └─ Claude Opus 4.7 (tool_use) → 최종 pool_size개 확정
+│   └─ Claude Opus (tool_use) → pool_size개 확정
 │       ※ 섹터 분산, 악재 뉴스, 글로벌 리서치 반영
 │
-├─ Stage 2: 매수 대상 선정 (5분마다, batchron 연동)
+├─ Stage 2: 매수 대상 선정 (30분 주기)
 │   ├─ KIS 실시간 시세 조회
-│   ├─ 당일 모멘텀 스코어링 (등락률 50% + 거래량 30% + 52주위치 20%)
-│   ├─ [비용 절감] 상위 풀 순위 동일 + TTL 15분 이내 → Claude 스킵, 캐시 재사용
-│   ├─ [안전장치] Bear 국면 → 매수 전면 차단
-│   ├─ [안전장치] 당일 손실 한도 초과 → 매수 전면 차단
-│   ├─ [안전장치] 상관계수 필터 → r≥0.70 종목 제외
-│   └─ Claude Sonnet 4.6 (tool_use) → 이상 징후 필터 후 최대 3종목 확정
-│       ※ 실제 Claude 호출: 순위 변동 시 또는 15분마다 (하루 ~26회)
+│   ├─ 당일 모멘텀 스코어링
+│   ├─ [안전장치] Bear 국면 / 손실 한도 초과 / 블랙리스트 → 매수 차단
+│   ├─ [비용 절감] 순위 동일 + TTL 15분 이내 → Claude 스킵, 캐시 재사용
+│   └─ Claude Sonnet (tool_use) → 최대 3종목 확정
 │
-├─ Stage 3: 매도 판단 (3분마다, batchron stop_loss 잡)
+├─ Stage 3: 매도 판단 (30분마다)
 │   ├─ [우선] 트레일링 스탑: 최고가 대비 5% 이탈 → 즉시 매도
 │   ├─ [우선] 익절 +7% → 즉시 매도
-│   └─ Claude Haiku 4.5 (tool_use) → 정성 판단 (애매 구간)
+│   └─ Claude Haiku → 정성 판단 (애매 구간)
 │
-└─ ATR 기반 포지션 사이징
-    qty = min(
-        portfolio × 1% / (ATR14 × 2),    # 리스크 기반
-        portfolio × 20% / price,           # 비중 한도
-        max_buy_amount / price             # 금액 한도
-    )
+└─ 체결 후 verify.py → Profit Board HMAC 서명 전송 (선택)
 
-[16:00 KST] 장 마감 후
-├─ 포트폴리오 자산 스냅샷 저장 (logs/portfolio_snapshots.json)
+[16:00 KST]
+├─ 포트폴리오 자산 스냅샷 저장
 └─ 텔레그램 일일 요약 전송
+```
+
+**ATR 기반 포지션 사이징:**
+
+```
+qty = min(
+    portfolio × 1% / (ATR14 × 2),    # 리스크 기반
+    portfolio × 20% / price,           # 비중 한도
+    max_buy_amount / price             # 금액 한도
+)
 ```
 
 ---
 
 ## 리스크 관리
 
-### ATR 기반 포지션 사이징
-
-```
-손실 한도 = 포트폴리오 × 1%
-손절 폭   = ATR14 × 2.0
-매수 수량 = min(손실한도 / 손절폭, 비중한도, 금액한도)
-```
-
-ATR 계산 우선순위:
-1. yfinance 14일 실제 ATR (`max(H-L, |H-Cprev|, |L-Cprev|)` 14일 평균)
-2. 52주 고저 범위 / 252 (fallback)
-
 ### 트레일링 스탑
 
-```
-매수 후 주가가 오를수록 손절선도 함께 올라감:
+매수 후 주가가 오를수록 손절선도 함께 상승합니다.
 
-  매수: 100,000원
-  → 120,000원 도달 (최고가 갱신)
-  → 스탑 = 120,000 × (1 - 5%) = 114,000원
-  → 114,000원 이하로 하락 시 즉시 매도 (수익 보전)
+```
+매수: 100,000원
+→ 120,000원 최고가 갱신
+→ 스탑 = 120,000 × (1 - 5%) = 114,000원
+→ 114,000원 이하 하락 시 즉시 매도 (수익 보전)
 ```
 
-`logs/trailing_stops.json` 에 영속 저장 → 프로세스 재시작 후에도 유지.
+`logs/trailing_stops.json`에 영속 저장 — 프로세스 재시작 후에도 유지됩니다.
 
 ### 상관계수 다양화 필터
 
-보유 종목과 3개월 일간 수익률 상관계수 ≥ 0.70이면 제외.  
-동일 섹터 집중 포지션 방지.
+보유 종목과 3개월 일간 수익률 상관계수 ≥ 0.70이면 신규 매수에서 제외합니다.
 
 ### 시장 국면 필터 (SMA200)
 
@@ -404,7 +323,7 @@ KODEX200 > SMA200 → Bull → 정상 매매
 KODEX200 < SMA200 → Bear → 신규 매수 전면 차단
 ```
 
-미국장은 QQQ 기준으로 동일하게 판단. 국면 전환 시 텔레그램 알림 발송.
+미국장은 QQQ 기준 동일하게 판단. 전환 시 텔레그램 알림 발송.
 
 ---
 
@@ -412,28 +331,23 @@ KODEX200 < SMA200 → Bear → 신규 매수 전면 차단
 
 ### 실전 매매 이중 잠금
 
-`KIS_IS_PAPER=false` (실전) 로 전환하려면 `.env` 에 다음을 **별도로** 추가해야 합니다:
+`KIS_IS_PAPER=false` 실전 전환은 `.env`에 두 항목이 **동시에** 있어야 합니다:
 
 ```dotenv
 KIS_IS_PAPER=false
 LIVE_TRADING_CONFIRMED=yes
 ```
 
-`LIVE_TRADING_CONFIRMED=yes` 없이 실행하면 러너가 즉시 종료됩니다.
+`LIVE_TRADING_CONFIRMED` 없이 실행하면 러너가 즉시 종료됩니다.
 
-### 당일 손실 한도
-
-당일 실현 손실이 `daily_loss_limit_krw(50만원)` 초과 시  
-신규 매수를 전면 중단합니다 (보유 종목 매도는 계속).
-
-### 모의투자 → 실전 전환 체크리스트
+### 실전 전환 체크리스트
 
 ```
 □ 최소 2주 이상 모의투자 정상 동작 확인
 □ logs/trades.csv 이상 거래 없음 확인
 □ 텔레그램 알림 정상 수신 확인
 □ max_buy_amount 실전에 맞게 조정
-□ .env 에 LIVE_TRADING_CONFIRMED=yes 추가
+□ .env에 LIVE_TRADING_CONFIRMED=yes 추가
 □ KIS_IS_PAPER=false 로 변경
 ```
 
@@ -441,7 +355,7 @@ LIVE_TRADING_CONFIRMED=yes
 
 ## 텔레그램 명령어
 
-`python telegram_cmd.py` 를 별도 프로세스로 실행하면 텔레그램에서 실시간으로 봇을 제어할 수 있습니다.
+`python telegram_cmd.py`를 별도 프로세스로 실행합니다.
 
 ### 조회
 
@@ -471,12 +385,11 @@ LIVE_TRADING_CONFIRMED=yes
 | `/set take_profit 7.0` | 익절 기준 변경 (%) | 0 ~ 100 |
 | `/set buy_limit 3` | 한국장 최대 매수 종목 수 | 1 ~ 10 |
 | `/set buy_limit_us 2` | 미국장 최대 매수 종목 수 | 1 ~ 10 |
-| `/reset` | 모든 봇 설정 초기화 (settings.yaml 기본값으로) |
+| `/reset` | 모든 봇 설정 초기화 (settings.yaml 기본값 복원) | — |
 
 ### 블랙리스트
 
-매수 제외 종목을 실시간으로 추가/해제합니다.  
-봇 재시작 후에도 `logs/bot_state.json`에 유지됩니다.
+매수 제외 종목을 실시간으로 관리합니다. `logs/bot_state.json`에 저장되어 재시작 후에도 유지됩니다.
 
 | 명령어 | 설명 |
 |--------|------|
@@ -490,23 +403,25 @@ LIVE_TRADING_CONFIRMED=yes
 | `/blacklist clear` | 전체 초기화 |
 
 > 영구 제외가 필요한 종목은 `settings.yaml`의 `blacklist.kr` / `blacklist.us`에 직접 추가하세요.  
-> 텔레그램으로 추가한 종목과 합산 적용됩니다.
+> `settings.yaml` 정적 목록 + 텔레그램 추가분이 **합산** 적용됩니다.
 
 ---
 
 ## 텔레그램 알림
 
-| 알림 | 트리거 | 기본 | 주요 정보 |
-|------|--------|------|----------|
-| 🚀 러너 시작 | `python runner.py` 실행 | ON | 모드, 장 시작 시각 |
-| 🟢 매수 체결 | 매수 실행 직후 | ON | 종목·수량·단가·금액·**목표가·손절가·트레일링스탑** |
-| 🔴 매도 체결 | 매도 실행 직후 | ON | 손익%·손익금액·**보유기간**·매도 사유 |
-| ⚠️ 오류 발생 | 예외 catch 시 | ON | 발생 위치·에러 메시지 (핵심만) |
-| 🔆🌑 국면 전환 | Bull↔Bear 전환 감지 시 | ON | SMA200 괴리율·매수 재개/차단 여부 |
-| 📋 일일 요약 | 매일 16:00 KST | ON | 실현손익·승률·매수/매도 내역·**보유종목 미실현 손익** |
-| 📊 후보 풀 선정 | 풀 갱신 완료 시 | OFF | 종목·팩터점수·1M 수익률 |
+| 알림 | 트리거 | 기본 |
+|------|--------|------|
+| 🚀 러너 시작 | `python runner.py` 실행 | ON |
+| 🟢 매수 체결 | 매수 실행 직후 | ON |
+| 🔴 매도 체결 | 매도 실행 직후 (손익 포함) | ON |
+| ⚠️ 오류 발생 | 예외 catch 시 | ON |
+| 🔆🌑 국면 전환 | Bull↔Bear 전환 감지 시 | ON |
+| 📋 일일 요약 | 매일 16:00 KST | ON |
+| 📊 후보 풀 선정 | 풀 갱신 완료 시 | OFF |
 
-### 매수 알림 예시
+### 알림 예시
+
+**매수:**
 ```
 🇰🇷 🟢 매수  09:17
 삼성전자  005930
@@ -518,7 +433,7 @@ LIVE_TRADING_CONFIRMED=yes
 📝 외국인 순매수 지속, 반도체 섹터 강세
 ```
 
-### 매도 알림 예시
+**매도:**
 ```
 🇰🇷 🔴 매도  11:42
 삼성전자  005930
@@ -528,69 +443,111 @@ LIVE_TRADING_CONFIRMED=yes
 📝 트레일링 스탑 발동
 ```
 
-### 일일 요약 예시
-```
-🇰🇷 일일 요약  06/05 (목)
-────────────────
-📈 실현손익  +45,300원
-🎯 승률  67%  (2승 1패)
-📋 매수 2건  |  매도 3건
-💼 포트폴리오  ₩5,234,000
+---
 
-오늘 매수
-  🟢 삼성전자  ₩74,500 × 3주
-오늘 매도
-  🔴 SK하이닉스  ▲3.21%
+## 전략 시스템
 
-보유 종목  2개  📈 미실현 +12,400원
-  ▲ 삼성전자  +2.10%
-  ▼ NAVER  -0.80%
+`trading.mode: strategy` 로 설정하면 `strategies/` 폴더의 규칙 기반 전략이 실행됩니다.
+
+### BaseStrategy 인터페이스
+
+모든 전략은 `BaseStrategy`를 상속해야 합니다:
+
+```python
+from strategies.base import BaseStrategy
+
+class MyStrategy(BaseStrategy):
+    def get_targets(self) -> list:
+        """매매 대상 종목 코드/티커 목록 반환"""
+        return ["005930", "000660"]
+
+    def should_buy(self, data: dict) -> bool:
+        """매수 여부 판단"""
+        return data["change_rate"] > 1.0
+
+    def should_sell(self, data: dict, holding: dict) -> bool:
+        """매도 여부 판단"""
+        return holding["profit_pct"] >= 7.0
 ```
+
+### 전략 등록 방법
+
+**방법 1 — settings.yaml에 이름 지정:**
+```yaml
+strategy:
+  name: my_strategy   # → strategies/my_strategy.py 자동 로드
+```
+
+전략 파일을 `strategies/my_strategy.py`에 저장하면 `runner.py`가 자동으로 `BaseStrategy` 서브클래스를 탐지해 주입합니다.
+
+**방법 2 — 마켓플레이스에서 설치:**
+```bash
+python install_strategy.py <전략ID>
+# → strategies/<이름>.py 자동 저장
+# → settings.yaml에 strategy.name만 추가하면 즉시 사용
+```
+
+---
+
+## Profit Board 연동
+
+거래 결과를 HMAC-SHA256 서명으로 Profit Board에 전송해 **수익을 공개 검증**합니다.
+
+### 설정
+
+1. Profit Board(`profit-board/`)를 배포합니다.
+2. `/register` 페이지에서 `VERIFY_USER_ID`와 `VERIFY_SECRET`을 발급받습니다.
+3. `.env`에 추가합니다:
+
+```dotenv
+VERIFY_ENDPOINT=https://your-profit-board.com
+VERIFY_USER_ID=발급받은_USER_ID
+VERIFY_SECRET=발급받은_SECRET
+```
+
+이후 매매가 체결될 때마다 `verify.py`가 HMAC 서명과 함께 거래 데이터를 자동 전송합니다.
+
+### 보안 구조
+
+| 보안 레이어 | 설명 |
+|------------|------|
+| HMAC-SHA256 서명 | `X-Signature` 헤더로 위변조 불가 |
+| 타임스탬프 검증 | 5분 초과 또는 1분 이상 미래 타임스탬프 거절 (소급 입력 차단) |
+| Nonce 중복 체크 | 동일 논스 재전송 차단 (replay attack 방지) |
+| Rate limiting | 유저당 10건/분 제한 |
+
+> `VERIFY_ENDPOINT`가 없으면 `verify.py`는 조용히 스킵합니다 — 거래에 영향 없음.
+
+### Profit Board 배포 (Docker)
+
+```bash
+cd profit-board
+docker compose up -d   # → http://localhost:3000
+```
+
+데이터는 `profit-board/data/trades.db`(SQLite)에 저장됩니다.
 
 ---
 
 ## 모니터링 대시보드
 
 ```bash
-streamlit run dashboard/app.py
-# http://localhost:8501
+streamlit run dashboard/app.py   # http://localhost:8501
 ```
 
 | 페이지 | 주요 내용 |
 |--------|----------|
-| 📊 메인 | 누적손익·승률·오늘거래·국면 메트릭, 팩터 상위 종목, IB 리서치 |
-| 📈 분석 | 실제 자산 커브(스냅샷), 실현손익 커브, 트레일링 스탑 현황, 팩터 레이더, 섹터 분포, 시장 국면 이력 |
+| 📊 메인 | 누적손익·승률·오늘거래·국면, 팩터 상위 종목, IB 리서치 |
+| 📈 분석 | 자산 커브, 실현손익 커브, 트레일링 스탑, 팩터 레이더, 섹터 분포 |
 | 📋 거래 이력 | 기간·종류·모드·종목 필터, 종목별 손익 바 차트, P&L 히스토그램 |
 | 📜 로그 & 캐시 | 컬러 러너 로그, pool_cache 뷰어, 리서치 캐시 |
-
----
-
-## 팩터 모델
-
-### 백테스트 결과 (3년, KOSPI 유니버스)
-
-| 팩터 | IC | ICIR | 설명 |
-|------|-----|------|------|
-| momentum_6m | **0.088** | **0.37** | 6개월 수익률 백분위 |
-| pos_52w | 0.086 | 0.32 | 52주 위치 (중간값 선호) |
-| volume_ratio | 0.044 | 0.25 | 5일/20일 거래량 비율 |
-| momentum_3m | 0.041 | 0.16 | 3개월 수익률 백분위 |
-| momentum_1m | 0.027 | 0.12 | 1개월 수익률 백분위 |
-| volatility | -0.060 | — | ❌ 음의 IC → 제외됨 |
-
-**IC 최적화 포트폴리오 성과 (거래비용 포함):**
-
-| | 3년 누적 | 연환산 |
-|--|---------|--------|
-| IC 최적 포트폴리오 | +298% | ~100% |
-| KOSPI 기준 | +259% | ~87% |
-| 거래비용 drag | -43% | — |
 
 ---
 
 ## 의존성
 
 ```
+anthropic             Claude API
 requests              HTTP (텔레그램 Bot API)
 schedule              스케줄러
 python-dotenv         .env 로더
@@ -598,7 +555,6 @@ yfinance              주가 데이터 (팩터 계산)
 pandas                데이터 처리
 numpy                 ATR 계산
 scipy                 백테스트 통계
-anthropic             Claude API
 pyyaml                settings.yaml 파서
 streamlit             모니터링 대시보드
 streamlit-autorefresh 대시보드 자동 새로고침
@@ -615,40 +571,38 @@ pip install -r requirements.txt
 
 | 파일 | 내용 |
 |------|------|
-| `logs/runner.log` | runner.py + brain.py + factor.py 전체 stdout |
+| `logs/runner.log` | 전체 stdout 로그 |
 | `logs/trades.csv` | 전체 거래 이력 (엑셀 호환) |
 | `logs/trades/YYYY-MM-DD.json` | 날짜별 거래 JSON |
-| `logs/pool_cache.json` | 당일 한국 후보 풀 + 팩터 점수 (Stage 1, 하루 1회) |
-| `logs/pool_cache_us.json` | 당일 미국 후보 풀 + 팩터 점수 (Stage 1, 하루 1회) |
-| `logs/stage2_cache.json` | 한국 Stage 2 마지막 결과 (TTL 15분) |
-| `logs/stage2_cache_us.json` | 미국 Stage 2 마지막 결과 (TTL 15분) |
-| `logs/regime_cache.json` | 시장 국면 이력 (최근 90일) |
-| `logs/portfolio_snapshots.json` | 일별 자산 스냅샷 (최근 365일) |
+| `logs/pool_cache.json` | 한국 후보 풀 + 팩터 점수 |
+| `logs/pool_cache_us.json` | 미국 후보 풀 + 팩터 점수 |
+| `logs/stage2_cache.json` | 한국 Stage 2 결과 캐시 (TTL 15분) |
+| `logs/stage2_cache_us.json` | 미국 Stage 2 결과 캐시 (TTL 15분) |
+| `logs/regime_cache.json` | 시장 국면 이력 |
+| `logs/portfolio_snapshots.json` | 일별 자산 스냅샷 |
 | `logs/trailing_stops.json` | 트레일링 스탑 추적 중인 종목 |
 | `logs/research_cache.json` | 글로벌 IB 리서치 요약 캐시 |
-| `logs/bot_state.json` | 텔레그램 봇 설정 (pause/mode/blacklist 등 런타임 override) |
+| `logs/bot_state.json` | 텔레그램 봇 설정 (pause/mode/blacklist 등) |
 
 ---
 
 ## FAQ
 
-**Q. 모의투자와 실전투자 차이?**  
-`KIS_IS_PAPER=true` 이면 KIS 모의투자 서버로 주문이 전달되어 실제 돈이 빠져나가지 않습니다.
+**Q. 모의투자와 실전 차이?**  
+`KIS_IS_PAPER=true`이면 KIS 모의투자 서버로 주문이 전달되어 실제 돈이 빠져나가지 않습니다.
 
 **Q. 후보 풀이 매일 바뀌나요?**  
-`pool_refresh: daily` 이면 매일 장 시작 시 새로 선정, `weekly` 이면 월요일에만 갱신됩니다.
+`pool_refresh: daily`이면 매 장 시작 시 새로 선정, `weekly`이면 월요일에만 갱신됩니다.
 
 **Q. Claude API 비용은?**  
-Stage 1(Opus 4.7) → Stage 2(Sonnet 4.6) → Stage 3(Haiku 4.5) 단계별 비용 최적화.  
-Stage 2는 상위 후보 순위가 바뀌거나 TTL(15분) 만료 시에만 호출 (하루 ~26회).  
-일반적으로 하루 $1 ~ $3 수준.
-
-**Q. 미국장은 언제 실행되나요?**  
-`market_open_us: "23:00"` ~ `market_close_us: "04:30"` KST (나스닥 기준).
+Stage 1(Opus) → Stage 2(Sonnet) → Stage 3(Haiku) 단계별 비용 최적화.  
+Stage 2는 순위 변동 또는 TTL 만료 시에만 호출 (하루 ~26회). 일반적으로 하루 $1~$3.
 
 **Q. 텔레그램 없이도 되나요?**  
-`.env` 에서 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` 를 비워두면 알림 없이 정상 실행됩니다.
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`를 비워두면 알림 없이 정상 실행됩니다.
 
-**Q. 미국장 팩터 가중치가 다른가요?**  
-미국장에서는 `foreign_flow`, `inst_flow` (KIS 전용 수급 데이터)가 자동으로 제외되고  
-나머지 팩터의 가중치가 합계 1.0이 되도록 자동 재정규화됩니다.
+**Q. 내가 만든 전략을 바로 쓸 수 있나요?**  
+`BaseStrategy`를 상속한 클래스를 `strategies/<이름>.py`에 저장하고 `settings.yaml`에서 `strategy.name: <이름>`으로 설정하면 즉시 주입됩니다.
+
+**Q. Profit Board 없이도 되나요?**  
+`VERIFY_ENDPOINT`를 설정하지 않으면 `verify.py`는 완전히 비활성화됩니다. 거래에 영향 없음.

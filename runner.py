@@ -170,10 +170,21 @@ def _create_strategy():
         from strategies.dual_momentum import DualMomentumStrategy
         return DualMomentumStrategy()
     else:
+        # ponytail: dynamic injection — drop any BaseStrategy subclass in strategies/{name}.py
+        import importlib, inspect as _inspect
+        try:
+            mod = importlib.import_module(f"strategies.{name}")
+            from strategies.base import BaseStrategy
+            for _, cls in _inspect.getmembers(mod, _inspect.isclass):
+                if issubclass(cls, BaseStrategy) and cls is not BaseStrategy:
+                    return cls()
+        except ModuleNotFoundError:
+            pass
         raise ValueError(
             f"알 수 없는 전략: '{name}'\n"
             f"settings.yaml → strategy.name 을 확인하세요.\n"
-            f"사용 가능: regime_adaptive, momentum, dual_momentum"
+            f"사용 가능: regime_adaptive, momentum, dual_momentum\n"
+            f"또는 strategies/{name}.py 에 BaseStrategy 서브클래스를 추가하세요."
         )
 
 strategy = _create_strategy()
@@ -608,12 +619,26 @@ def run_strategy_mode_us():
             "momentum_us":        ("strategies.momentum_us",        "MomentumStrategyUS"),
         }
         if strategy_name not in mod_map:
-            print(f"[US-Strategy] 알 수 없는 전략: {strategy_name}")
-            notify.alert_error("[US-Strategy]", f"알 수 없는 전략: {strategy_name}")
-            return
-        mod_path, cls_name = mod_map[strategy_name]
-        mod      = importlib.import_module(mod_path)
-        strategy_us = getattr(mod, cls_name)()
+            # ponytail: dynamic injection fallback — strategies/{name}.py
+            import inspect as _inspect
+            from strategies.base import BaseStrategy
+            try:
+                mod = importlib.import_module(f"strategies.{strategy_name}")
+                strategy_us = None
+                for _, cls in _inspect.getmembers(mod, _inspect.isclass):
+                    if issubclass(cls, BaseStrategy) and cls is not BaseStrategy:
+                        strategy_us = cls()
+                        break
+                if strategy_us is None:
+                    raise ModuleNotFoundError
+            except ModuleNotFoundError:
+                print(f"[US-Strategy] 알 수 없는 전략: {strategy_name}")
+                notify.alert_error("[US-Strategy]", f"알 수 없는 전략: {strategy_name}")
+                return
+        else:
+            mod_path, cls_name = mod_map[strategy_name]
+            mod         = importlib.import_module(mod_path)
+            strategy_us = getattr(mod, cls_name)()
     except Exception as e:
         notify.alert_error("[US-Strategy] 전략 로드 실패", e)
         return
