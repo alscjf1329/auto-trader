@@ -197,6 +197,9 @@ def reload():
     UNIVERSE_US_MAP     = {s["ticker"]: s["name"] for s in UNIVERSE_US}
     UNIVERSE_US_EXCH    = {s["ticker"]: s["exchange"] for s in UNIVERSE_US}
     _all_params         = _cfg.get("params", {})
+    _bl              = _cfg.get("blacklist", {})
+    BLACKLIST_KR     = _bl.get("kr", [])
+    BLACKLIST_US     = _bl.get("us", [])
     FACTOR_WEIGHTS      = _cfg.get("factor_weights", {
         "momentum_6m":  0.21,
         "pos_52w":      0.18,
