@@ -579,9 +579,9 @@ CONTROL_SECRET=비밀토큰   # profit-board와 동일하게 설정
 
 | 엔드포인트 | 메서드 | 설명 |
 |-----------|--------|------|
-| `GET /api/state` | GET | 현재 봇 상태 + settings.yaml 기본값 조회 |
-| `GET /api/pnl` | GET | 오늘 실현 손익·매매 내역 |
-| `GET /api/pool` | GET | 한국·미국 후보 풀 캐시 조회 |
+| `/api/state` | GET | 현재 봇 상태 + settings.yaml 기본값 조회 |
+| `/api/pnl` | GET | 오늘 실현 손익·매매 내역 |
+| `/api/pool` | GET | 한국·미국 후보 풀 캐시 조회 |
 | `/api/pause` | POST | 신규 매수 중단 |
 | `/api/resume` | POST | 매수 재개 |
 | `/api/mode` | POST | `{"mode": "brain"}` or `"strategy"` |
