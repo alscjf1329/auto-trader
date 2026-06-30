@@ -192,7 +192,7 @@ stocks_us:
   - { ticker: "V",     name: "Visa",        exchange: "NYS" }
   # ETF
   - { ticker: "QQQ",   name: "나스닥100ETF", exchange: "NAS" }
-  - { ticker: "SPY",   name: "S&P500ETF",   exchange: "NYS" }
+  - { ticker: "SPY",   name: "S&P500ETF",   exchange: "AMS" }
 
 
 # ─────────────────────────────────────────
