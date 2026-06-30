@@ -18,9 +18,12 @@ Claude AI 기반 한국·미국 주식 자동매매 시스템.
 9. [텔레그램 알림](#텔레그램-알림)
 10. [전략 시스템](#전략-시스템)
 11. [Profit Board 연동](#profit-board-연동)
-12. [모니터링 대시보드](#모니터링-대시보드)
-13. [의존성](#의존성)
-14. [FAQ](#faq)
+12. [원격 제어 서버](#원격-제어-서버)
+13. [DART 공시 봇](#dart-공시-봇)
+14. [급등 알림 봇](#급등-알림-봇)
+15. [모니터링 대시보드](#모니터링-대시보드)
+16. [의존성](#의존성)
+17. [FAQ](#faq)
 
 ---
 
@@ -40,7 +43,16 @@ python runner.py
 # 4. (별도 터미널) 텔레그램 봇 명령어 핸들러
 python telegram_cmd.py
 
-# 5. (선택) 모니터링 대시보드
+# 5. (선택) profit-board 연동 원격 제어 서버
+python control.py
+
+# 6. (선택) DART 공시 알림 봇
+python dart_bot.py
+
+# 7. (선택) 급등 예측 알림 봇
+python surge_alert.py
+
+# 8. (선택) 모니터링 대시보드
 streamlit run dashboard/app.py   # → http://localhost:8501
 ```
 
@@ -101,6 +113,9 @@ auto-trader/
 ├── settings.yaml               # 전체 설정 파일
 ├── notify.py                   # 텔레그램 알림
 ├── telegram_cmd.py             # 텔레그램 명령어 봇 (별도 프로세스)
+├── control.py                  # profit-board 연동 원격 제어 HTTP 서버 (선택)
+├── dart_bot.py                 # DART 공시 파싱 → 텔레그램 알림 + 자동매매 (선택)
+├── surge_alert.py              # 급등 예측 알림 봇 — 거래량/BB/52주신고가 (선택)
 ├── kis_api.py                  # KIS (한국투자증권) API 래퍼
 ├── verify.py                   # Profit Board HMAC 서명 전송
 ├── install_strategy.py         # 마켓플레이스 전략 설치 CLI
@@ -168,6 +183,24 @@ TELEGRAM_CHAT_ID=
 VERIFY_ENDPOINT=https://your-profit-board.com
 VERIFY_SECRET=
 VERIFY_USER_ID=
+
+# ── 원격 제어 서버 control.py (선택) ──────────────────────
+CONTROL_PORT=5001
+CONTROL_SECRET=
+
+# ── DART 공시 봇 dart_bot.py (선택) ───────────────────────
+DART_API_KEY=                    # https://opendart.fss.or.kr 무료 발급
+DART_BOT_TOKEN=                  # BotFather에서 별도 봇 생성
+DART_CHAT_ID=
+DART_AUTO_BUY_AMOUNT=100000      # 공시 자동매수 금액 (원)
+
+# ── 급등 알림 봇 surge_alert.py (선택) ────────────────────
+SURGE_BOT_TOKEN=                 # BotFather에서 별도 봇 생성
+SURGE_CHAT_ID=
+# SURGE_VOL_RATIO=3.0            # 거래량 평균 대비 배수 (기본 3.0x)
+# SURGE_VOL_AVG_DAYS=20          # 거래량 평균 산정 기간 (기본 20일)
+# SURGE_BB_SQUEEZE=0.03          # BB 스퀴즈 판단 밴드폭/가격 비율 (기본 3%)
+# SURGE_COOLDOWN_MIN=120         # 재알림 방지 시간(분, 기본 120)
 
 # ── 실전 전환 시에만 추가 ──────────────────────────────────
 # LIVE_TRADING_CONFIRMED=yes
@@ -526,6 +559,99 @@ docker compose up -d   # → http://localhost:3000
 ```
 
 데이터는 `profit-board/data/trades.db`(SQLite)에 저장됩니다.
+
+---
+
+## 원격 제어 서버
+
+`control.py`는 profit-board UI와 연동하는 HTTP 서버입니다. 텔레그램 명령어 대신 웹 UI로 봇을 제어합니다.
+
+```bash
+python control.py   # 기본 포트 5001
+```
+
+`.env` 설정:
+
+```dotenv
+CONTROL_PORT=5001
+CONTROL_SECRET=비밀토큰   # profit-board와 동일하게 설정
+```
+
+| 엔드포인트 | 메서드 | 설명 |
+|-----------|--------|------|
+| `GET /api/state` | GET | 현재 봇 상태 + settings.yaml 기본값 조회 |
+| `GET /api/pnl` | GET | 오늘 실현 손익·매매 내역 |
+| `GET /api/pool` | GET | 한국·미국 후보 풀 캐시 조회 |
+| `/api/pause` | POST | 신규 매수 중단 |
+| `/api/resume` | POST | 매수 재개 |
+| `/api/mode` | POST | `{"mode": "brain"}` or `"strategy"` |
+| `/api/set` | POST | `stop_loss_pct`, `take_profit_pct`, `buy_limit`, `buy_limit_us` 변경 |
+| `/api/blacklist/add` | POST | `{"market": "kr", "code": "005930"}` |
+| `/api/blacklist/remove` | POST | 블랙리스트 해제 |
+| `/api/blacklist/clear` | POST | `{"market": "kr"}` or 전체 초기화 |
+| `/api/reset` | POST | 모든 설정 초기화 |
+
+모든 요청에 `Authorization: Bearer <CONTROL_SECRET>` 헤더가 필요합니다. `CONTROL_SECRET` 미설정 시 인증 없이 접근 가능하므로 내부망에서만 사용하세요.
+
+---
+
+## DART 공시 봇
+
+`dart_bot.py`는 DART 공시를 N분마다 폴링해 호재/악재를 분류하고 텔레그램으로 알립니다. 감시 종목의 유의미한 공시는 자동으로 매수/매도까지 실행합니다.
+
+```bash
+python dart_bot.py                # 기본 3분 간격, 자동매매 ON
+python dart_bot.py --interval 2   # 2분마다 폴링
+python dart_bot.py --no-trade     # 알림만, 자동매매 비활성화
+```
+
+`.env` 설정:
+
+```dotenv
+DART_API_KEY=         # https://opendart.fss.or.kr 무료 발급 (하루 10만 건)
+DART_BOT_TOKEN=       # BotFather에서 별도 봇 생성 권장
+DART_CHAT_ID=
+DART_AUTO_BUY_AMOUNT=100000   # 공시 자동매수 금액 (원)
+```
+
+| 구분 | 키워드 예시 |
+|------|-----------|
+| 🟢 호재 | 자기주식취득, 수주공시, 단일판매·공급계약체결, 주식배당 등 |
+| 🔴 악재 | 유상증자, 전환사채, 회생절차, 불성실공시법인 등 |
+
+- 감시 종목은 `settings.yaml`의 `stocks` / `universe` 목록에서 자동 로드
+- 자동매매는 감시 종목 중 호재→매수 / 악재→매도만 실행 (보수적 소액 운용)
+
+---
+
+## 급등 알림 봇
+
+`surge_alert.py`는 이미 오른 종목이 아닌 **오르기 직전** 신호를 감지해 텔레그램으로 알립니다.
+
+```bash
+python surge_alert.py              # 기본 5분 간격
+python surge_alert.py --interval 3
+```
+
+`.env` 설정:
+
+```dotenv
+SURGE_BOT_TOKEN=              # BotFather에서 별도 봇 생성 권장
+SURGE_CHAT_ID=
+# SURGE_VOL_RATIO=3.0         # 거래량 평균 대비 배수 (기본 3.0x)
+# SURGE_VOL_AVG_DAYS=20       # 거래량 평균 산정 기간 (기본 20일)
+# SURGE_BB_SQUEEZE=0.03       # BB 스퀴즈 판단 밴드폭/가격 비율 (기본 3%)
+# SURGE_COOLDOWN_MIN=120      # 재알림 방지 시간(분, 기본 120)
+```
+
+| 신호 | 조건 | 대상 |
+|------|------|------|
+| 거래량 폭증 돌파 | 거래량 > N일 평균 3x + 전일 고가 돌파 | 한·미 |
+| BB 스퀴즈 돌파 | 밴드폭 ≤ 3% 압축 후 상단 돌파 | 한·미 |
+| 52주 신고가 | 52주 고점 돌파 (저항 없는 구간 진입) | 한·미 |
+| 장초반 거래량 폭발 | 9:00~9:30 거래량 > 전일 총량 10% | 한국만 |
+
+감시 종목은 `settings.yaml`의 `stocks_us` / `universe_us` (미국), `stocks` / `universe` (한국)에서 자동 로드. 동일 종목·동일 신호는 쿨다운 120분 내 재알림 안 함.
 
 ---
 
