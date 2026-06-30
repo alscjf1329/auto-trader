@@ -765,7 +765,7 @@ def run_daily_summary():
         notify.alert_error("[Daily] 한국 잔고 조회 실패", e)
         pv_kr = 0.0
 
-    if settings.MODE == "brain":
+    if settings.MODE == "brain" or settings.STOCK_US_CODES:
         try:
             us_balance = kis_api.get_balance_us()
             pv_us  = sum(float(b.get("evlu_amt", 0)) for b in us_balance)
@@ -788,7 +788,7 @@ def run_daily_summary():
             holdings=kr_balance,
             market="KR",
         )
-        if settings.MODE == "brain":
+        if settings.MODE == "brain" or settings.STOCK_US_CODES:
             notify.daily_summary(
                 portfolio_value=pv_us,
                 holdings=us_balance,
@@ -800,8 +800,7 @@ def run_daily_summary():
 if __name__ == "__main__":
     # 스케줄 등록
     schedule.every(settings.INTERVAL_MINUTES).minutes.do(run)
-    if settings.MODE == "brain":
-        schedule.every(settings.INTERVAL_MINUTES_US).minutes.do(run_us)
+    schedule.every(settings.INTERVAL_MINUTES_US).minutes.do(run_us)
     schedule.every().day.at(settings.TELEGRAM_SUMMARY_TIME).do(run_daily_summary)
 
     mode_label = (
