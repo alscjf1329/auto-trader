@@ -12,7 +12,8 @@ _access_token = None
 # KIS API 초당 5회 제한 대응 (0.35초 간격 = 최대 2.8회/초, 여유있게)
 _RATE_LIMIT_INTERVAL = 0.35
 _last_call_time: float = 0.0
-_RATE_LIMIT_ERROR = "초당 거래건수를 초과"
+_RATE_LIMIT_ERROR   = "초당 거래건수를 초과"
+_TOKEN_EXPIRED_ERROR = "만료된 token"
 
 
 def _rate_limit():
@@ -26,7 +27,8 @@ def _rate_limit():
 
 
 def _kis_get(url: str, headers: dict, params: dict, retries: int = 3) -> dict:
-    """GET 요청 + 초당 거래건수 초과 시 자동 재시도"""
+    """GET 요청 + 속도 제한/토큰 만료 시 자동 재시도"""
+    global _access_token
     for attempt in range(retries):
         _rate_limit()
         res = requests.get(url, headers=headers, params=params).json()
@@ -35,6 +37,14 @@ def _kis_get(url: str, headers: dict, params: dict, retries: int = 3) -> dict:
             wait = 1.0 * (attempt + 1)
             print(f"  [KIS] 속도 제한 → {wait:.0f}초 대기 후 재시도 ({attempt+1}/{retries})")
             time.sleep(wait)
+            continue
+        if _TOKEN_EXPIRED_ERROR in msg:
+            _access_token = None
+            if _TOKEN_CACHE.exists():
+                _TOKEN_CACHE.unlink()
+            new_token = get_access_token()
+            headers = {**headers, "authorization": f"Bearer {new_token}"}
+            print(f"  [KIS] 토큰 만료 → 재발급 후 재시도 ({attempt+1}/{retries})")
             continue
         return res
     return res  # 마지막 응답 그대로 반환
